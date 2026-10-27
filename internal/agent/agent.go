@@ -131,13 +131,18 @@ func ReviewPrompt(scope, base, commit, userPrompt string) (string, error) {
 
 // Default infers which peer to talk to from the MCP client's reported name:
 // a Claude client talks to codex and a Codex client talks to claude.
+//
+// Observed client names: Claude Code reports "claude-code", Claude Desktop
+// chat "claude-ai"/"Claude Desktop", and Claude Desktop's Cowork/plugin host
+// "local-agent-mode-plugin:<plugin>:<server>" (no "claude" in it, hence the
+// extra pattern). Codex reports names containing "codex".
 func Default(clientName string) (string, bool) {
 	n := strings.ToLower(clientName)
 	switch {
-	case strings.Contains(n, "claude"):
-		return "codex", true
 	case strings.Contains(n, "codex"):
 		return "claude", true
+	case strings.Contains(n, "claude"), strings.Contains(n, "cowork"), strings.HasPrefix(n, "local-agent-mode"):
+		return "codex", true
 	}
 	return "", false
 }

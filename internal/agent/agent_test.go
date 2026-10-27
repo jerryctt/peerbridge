@@ -64,6 +64,7 @@ func TestDefault(t *testing.T) {
 		{"claude-ai", "codex", true},
 		{"Claude Desktop", "codex", true},
 		{"claude-code", "codex", true},
+		{"local-agent-mode-plugin:peerbridge:peerbridge", "codex", true}, // Claude Desktop Cowork/plugin host
 		{"codex-cli", "claude", true},
 		{"Codex", "claude", true},
 		{"mcp-inspector", "", false},
