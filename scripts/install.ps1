@@ -38,6 +38,13 @@ $ErrorActionPreference = 'Stop'
 $Repo = "jerryctt/hostrunner-mcp"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
+# Windows PowerShell 5.1 reads BOM-less files and writes with the ANSI code
+# page by default; config files and non-ASCII user names would be corrupted.
+# Always go through UTF-8 (no BOM) explicitly.
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+function Read-Text([string]$Path) { [System.IO.File]::ReadAllText($Path, $Utf8NoBom) }
+function Write-Text([string]$Path, [string]$Text) { [System.IO.File]::WriteAllText($Path, $Text, $Utf8NoBom) }
+
 if (-not $Codex -and -not $Claude) { $Codex = $true; $Claude = $true }
 
 # ---- platform ---------------------------------------------------------------
@@ -74,9 +81,12 @@ if ($onWindows) {
   $ext = "tar.gz"
 }
 
-if (-not $Version) {
-  $pluginJson = Get-Content (Join-Path $Root ".claude-plugin\plugin.json") -Raw | ConvertFrom-Json
-  $Version = $pluginJson.version
+if (-not $Version -and -not $Local) {
+  $pluginPath = Join-Path $Root ".claude-plugin\plugin.json"
+  if (-not (Test-Path $pluginPath)) {
+    throw "cannot determine the release version: $pluginPath is missing. Pass -Version X.Y.Z (or -Local <exe>)."
+  }
+  $Version = (Read-Text $pluginPath | ConvertFrom-Json).version
 }
 
 # ---- 1. binary --------------------------------------------------------------
@@ -101,7 +111,7 @@ if ($Local) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive" -OutFile (Join-Path $tmp $archive)
     Invoke-WebRequest -UseBasicParsing -Uri "$base/checksums.txt" -OutFile (Join-Path $tmp "checksums.txt")
-    $line = Get-Content (Join-Path $tmp "checksums.txt") | Where-Object { $_ -match ("\s" + [regex]::Escape($archive) + "$") } | Select-Object -First 1
+    $line = (Read-Text (Join-Path $tmp "checksums.txt")) -split "`r?`n" | Where-Object { $_ -match ("\s" + [regex]::Escape($archive) + "$") } | Select-Object -First 1
     if (-not $line) { throw "$archive not listed in checksums.txt" }
     $want = ($line -split "\s+")[0].ToLower()
     $got = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $archive)).Hash.ToLower()
@@ -126,11 +136,11 @@ if ($Local) {
 # ---- 2. hostrunner config -----------------------------------------------------
 if (-not (Test-Path $hrConfig)) {
   New-Item -ItemType Directory -Force -Path (Split-Path $hrConfig) | Out-Null
-  $example = Get-Content (Join-Path $Root "examples\config.example.yaml") -Raw
+  $example = Read-Text (Join-Path $Root "examples\config.example.yaml")
   if ($onWindows) {
     $example = $example -replace '/Users/you/code', ((Join-Path $home_ "code") -replace '\\', '/')
   }
-  Set-Content -Path $hrConfig -Value $example -NoNewline
+  Write-Text $hrConfig $example
   Write-Host "created $hrConfig - edit allowed_roots before use"
 } else {
   Write-Host "config: $hrConfig (unchanged)"
@@ -141,14 +151,14 @@ if ($Codex) {
   $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $home_ ".codex" }
   $cfg = Join-Path $codexHome "config.toml"
   New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
-  if (-not (Test-Path $cfg)) { Set-Content -Path $cfg -Value "" -NoNewline }
+  if (-not (Test-Path $cfg)) { Write-Text $cfg "" }
 
   $begin = "# >>> hostrunner (managed by install.ps1) >>>"
   $end = "# <<< hostrunner <<<"
   # Also recognise the block written by scripts/install-codex.sh.
   $beginSh = "# >>> hostrunner (managed by install-codex.sh) >>>"
 
-  $lines = @(Get-Content $cfg)
+  $lines = @((Read-Text $cfg) -split "`r?`n")
   $kept = New-Object System.Collections.Generic.List[string]
   $skip = $false
   foreach ($l in $lines) {
@@ -190,15 +200,28 @@ if ($Codex) {
     $end
   )
   $newText = (@($kept) + $block) -join "`n"
-  Set-Content -Path $cfg -Value ($newText + "`n") -NoNewline
+  Write-Text $cfg ($newText + "`n")
 
+  # Validate with codex itself when available; restore the original on any
+  # failure. Under 5.1 a native command writing to stderr can itself throw
+  # when $ErrorActionPreference is Stop, so relax it inside the try.
   $codexExe = Get-Command codex -ErrorAction SilentlyContinue
   if ($codexExe) {
-    $out = & $codexExe.Source mcp list 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $ok = $false; $said = ""
+    try {
+      $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      $out = & $codexExe.Source mcp list 2>&1
+      $ErrorActionPreference = $prev
+      $ok = ($LASTEXITCODE -eq 0)
+      $said = ($out | ForEach-Object { "$_" }) -join "`n"
+    } catch {
+      $ErrorActionPreference = 'Stop'
+      $said = $_.Exception.Message
+    }
+    if (-not $ok) {
       Copy-Item -Force $backup $cfg
       Remove-Item -Force $backup
-      throw "codex rejected the updated $cfg; original restored. codex said:`n$($out -join "`n")"
+      throw "codex rejected the updated $cfg; original restored. codex said:`n$said"
     }
   }
   Remove-Item -Force $backup
@@ -224,7 +247,7 @@ if ($Claude) {
   } else {
     New-Item -ItemType Directory -Force -Path (Split-Path $claudeConfig) | Out-Null
     if (Test-Path $claudeConfig) {
-      $raw = Get-Content $claudeConfig -Raw
+      $raw = Read-Text $claudeConfig
       $json = if ($raw -and $raw.Trim()) { $raw | ConvertFrom-Json } else { New-Object PSObject }
       Copy-Item -Force $claudeConfig "$claudeConfig.bak.hostrunner"
     } else {
@@ -242,7 +265,7 @@ if ($Claude) {
     } else {
       $servers | Add-Member -MemberType NoteProperty -Name $ServerName -Value $entryObj
     }
-    Set-Content -Path $claudeConfig -Value ($json | ConvertTo-Json -Depth 10) -NoNewline
+    Write-Text $claudeConfig ($json | ConvertTo-Json -Depth 10)
     Write-Host "claude desktop: mcpServers.$ServerName written to $claudeConfig (backup: .bak.hostrunner)"
   }
 }

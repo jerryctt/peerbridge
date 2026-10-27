@@ -53,6 +53,7 @@ archives:
       - examples/config.example.yaml
       - examples/claude_desktop_config.example.json
       - scripts/install.ps1
+      - .claude-plugin/plugin.json
       - skills/**/*
 
 checksum:

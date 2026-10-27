@@ -168,8 +168,13 @@ func TestAgentsLegacyDoesNotDuplicate(t *testing.T) {
 
 func TestResolvePathPrefersExistingCandidate(t *testing.T) {
 	home := t.TempDir()
+	// Cover every variable os.UserHomeDir / os.UserConfigDir consult, so the
+	// test is hermetic on Linux, macOS and Windows and never touches a real
+	// %APPDATA% or ~/.config.
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("HOSTRUNNER_CONFIG", "")
 
 	paths := DefaultPaths()
