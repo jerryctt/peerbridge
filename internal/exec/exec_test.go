@@ -20,6 +20,18 @@ func TestRunCapturesStdoutAndExit(t *testing.T) {
 	}
 }
 
+func TestRunAppendsEnv(t *testing.T) {
+	r, err := Run(context.Background(), Request{
+		Command: "sh", Args: []string{"-c", "echo $HOSTRUNNER_TEST_VAR"}, Env: []string{"HOSTRUNNER_TEST_VAR=from-request"}, MaxOutputBytes: 1000,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.TrimSpace(r.Stdout) != "from-request" {
+		t.Errorf("env not applied, stdout=%q", r.Stdout)
+	}
+}
+
 func TestRunFeedsStdin(t *testing.T) {
 	r, err := Run(context.Background(), Request{
 		Command: "cat", Stdin: "piped-input", MaxOutputBytes: 1000,

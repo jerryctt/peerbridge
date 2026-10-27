@@ -307,10 +307,30 @@ func (s *Service) run(ctx context.Context, b agent.Backend, dir string, args []s
 // repository whose HEAD is unborn (no commits yet).
 const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
+// gitSafety neutralises the ways plain git can execute programs or write to
+// the repository while we only want to read it:
+//   - core.fsmonitor=false: `git status`/`diff` would otherwise spawn the
+//     configured fsmonitor hook;
+//   - core.hooksPath=/dev/null: no hook directory can be found;
+//   - the env drops the user's and system's git config (where git-lfs and
+//     other clean/smudge filters, diff.external, etc. are normally defined;
+//     the repo's own .git/config is the user's local state and still applies)
+//     and GIT_OPTIONAL_LOCKS=0 stops `git status` from refreshing the index.
+var gitSafety = []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"}
+
+var gitEnv = []string{
+	"GIT_CONFIG_GLOBAL=/dev/null",
+	"GIT_CONFIG_SYSTEM=/dev/null",
+	"GIT_CONFIG_NOSYSTEM=1",
+	"GIT_OPTIONAL_LOCKS=0",
+	"GIT_TERMINAL_PROMPT=0",
+}
+
 // git runs one read-only git command in dir with the configured caps.
 func (s *Service) git(ctx context.Context, dir string, args ...string) (exec.Result, error) {
+	full := append(append([]string{}, gitSafety...), args...)
 	return s.Runner.Run(ctx, exec.Request{
-		Command: "git", Args: args, Dir: dir,
+		Command: "git", Args: full, Dir: dir, Env: gitEnv,
 		Timeout: s.Cfg.Timeout, MaxOutputBytes: s.Cfg.MaxOutputBytes, StreamTo: s.streamTo(),
 	})
 }

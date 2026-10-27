@@ -128,6 +128,33 @@ func mustResolve(t *testing.T, cfg *config.Config, dir string) string {
 	return resolved
 }
 
+// gitKey builds a scriptedRunner key for a git invocation, including the
+// safety prefix the server always prepends.
+func gitKey(args string) string {
+	return "git " + strings.Join(gitSafety, " ") + " " + args
+}
+
+// gitCalls returns the git subcommands a runner saw, without the safety
+// prefix, and checks every call carried the isolation env.
+func gitCalls(t *testing.T, reqs []exec.Request) []string {
+	t.Helper()
+	var calls []string
+	for _, q := range reqs {
+		if q.Command != "git" {
+			continue
+		}
+		if len(q.Args) < len(gitSafety) || strings.Join(q.Args[:len(gitSafety)], " ") != strings.Join(gitSafety, " ") {
+			t.Errorf("git call missing safety prefix: %v", q.Args)
+			continue
+		}
+		if strings.Join(q.Env, " ") != strings.Join(gitEnv, " ") {
+			t.Errorf("git call missing isolation env: %v", q.Env)
+		}
+		calls = append(calls, strings.Join(q.Args[len(gitSafety):], " "))
+	}
+	return calls
+}
+
 const claudeJSON = `{"type":"result","subtype":"success","is_error":false,"result":"CLAUDE_SAYS","session_id":"sess-42"}`
 const codexJSONL = "{\"type\":\"thread.started\",\"thread_id\":\"thr-7\"}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"CODEX_SAYS\"}}\n"
 
@@ -223,12 +250,7 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 	}
 	// hostrunner computed the diff itself with read-only git, since the
 	// claude peer has no shell; "--" ends option parsing after the ref.
-	var gitCalls []string
-	for _, q := range r.all() {
-		if q.Command == "git" {
-			gitCalls = append(gitCalls, strings.Join(q.Args, " "))
-		}
-	}
+	gitCalls := gitCalls(t, r.all())
 	if strings.Join(gitCalls, ";") != "diff --no-ext-diff --no-textconv main...HEAD --" {
 		t.Errorf("git calls = %v", gitCalls)
 	}
@@ -262,8 +284,8 @@ func TestReviewStartRejectsOptionLikeRefs(t *testing.T) {
 
 func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 	r := &scriptedRunner{replies: map[string]exec.Result{
-		"git status --short --untracked-files=all":     {Stdout: "?? new.go\n"},
-		"git diff --no-ext-diff --no-textconv HEAD --": {Stdout: "+++ b/new.go\n"},
+		gitKey("status --short --untracked-files=all"):     {Stdout: "?? new.go\n"},
+		gitKey("diff --no-ext-diff --no-textconv HEAD --"): {Stdout: "+++ b/new.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
 	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "")
@@ -275,20 +297,15 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 	if !strings.Contains(in, "?? new.go") || !strings.Contains(in, "+++ b/new.go") {
 		t.Errorf("stdin should carry status and diff: %q", in)
 	}
-	var gitCalls []string
-	for _, q := range r.all() {
-		if q.Command == "git" {
-			gitCalls = append(gitCalls, strings.Join(q.Args, " "))
-		}
-	}
+	gitCalls := gitCalls(t, r.all())
 	if want := "rev-parse --verify --quiet HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv HEAD --"; strings.Join(gitCalls, ";") != want {
 		t.Errorf("git calls = %v", gitCalls)
 	}
 
 	// Unborn HEAD (no commits yet): diff against the empty tree instead.
 	r3 := &scriptedRunner{replies: map[string]exec.Result{
-		"git rev-parse --verify --quiet HEAD":                       {ExitCode: 1},
-		"git diff --no-ext-diff --no-textconv " + emptyTree + " --": {Stdout: "+++ b/first.go\n"},
+		gitKey("rev-parse --verify --quiet HEAD"):                       {ExitCode: 1},
+		gitKey("diff --no-ext-diff --no-textconv " + emptyTree + " --"): {Stdout: "+++ b/first.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s3, repo3 := newSvc(t, r3)
 	out, _ = s3.ReviewStart(context.Background(), "claude", repo3, "", "", "", "")
@@ -299,7 +316,7 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 
 	// A failing git command aborts the job before the peer runs.
 	r2 := &scriptedRunner{replies: map[string]exec.Result{
-		"git diff --no-ext-diff --no-textconv main...HEAD --": {ExitCode: 128, Stderr: "fatal: bad revision"},
+		gitKey("diff --no-ext-diff --no-textconv main...HEAD --"): {ExitCode: 128, Stderr: "fatal: bad revision"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s2, repo2 := newSvc(t, r2)
 	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "base", "main", "", "")

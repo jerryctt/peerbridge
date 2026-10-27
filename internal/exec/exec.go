@@ -5,27 +5,31 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
 
 type Request struct {
-	Command        string
-	Args           []string
-	Dir            string
-	Stdin          string
-	Timeout        time.Duration
+	Command string
+	Args    []string
+	Dir     string
+	Stdin   string
+	Timeout time.Duration
 	// MaxOutputBytes caps combined stdout/stderr output; 0 means unlimited.
 	MaxOutputBytes int
 	// StreamTo, if non-nil, means stdout and stderr are also written here live,
 	// in addition to being captured in the Result.
 	StreamTo io.Writer
+	// Env holds extra KEY=VALUE entries appended to the inherited environment
+	// (later entries win), e.g. to neutralise a tool's config lookups.
+	Env []string
 }
 
 type Result struct {
-	Stdout    string
-	Stderr    string
+	Stdout string
+	Stderr string
 	// ExitCode is the process exit code; it is -1 when TimedOut is true.
 	ExitCode  int
 	Elapsed   time.Duration
@@ -42,6 +46,9 @@ func Run(ctx context.Context, req Request) (Result, error) {
 
 	cmd := exec.Command(req.Command, req.Args...)
 	cmd.Dir = req.Dir
+	if len(req.Env) > 0 {
+		cmd.Env = append(os.Environ(), req.Env...)
+	}
 	if req.Stdin != "" {
 		cmd.Stdin = strings.NewReader(req.Stdin)
 	}
