@@ -419,7 +419,10 @@ func gitArgs(scope, base, commit string, headUnborn bool, mergeBase string) [][]
 			{"diff", safe1, safe2, mergeBase, "--"},
 		}
 	case "commit":
-		return [][]string{{"show", safe1, safe2, "--format=medium", commit, "--"}}
+		// --diff-merges=first-parent: for a merge commit, plain `show` prints a
+		// combined diff that omits hunks matching either parent (often nothing
+		// at all); the first-parent diff is what the merge brought in.
+		return [][]string{{"show", safe1, safe2, "--diff-merges=first-parent", "--format=medium", commit, "--"}}
 	default: // uncommitted
 		head := "HEAD"
 		if headUnborn {

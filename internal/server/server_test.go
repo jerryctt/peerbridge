@@ -401,6 +401,19 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 	}
 }
 
+func TestReviewCommitScopeUsesFirstParentDiff(t *testing.T) {
+	r := &scriptedRunner{replies: map[string]exec.Result{}, fallback: exec.Result{Stdout: claudeJSON}}
+	s, repo := newSvc(t, r)
+	out, _ := s.ReviewStart(context.Background(), "claude", repo, "commit", "", "abc123", "")
+	if got, isErr := waitStatus(t, s, jobID(t, out)); isErr {
+		t.Fatalf("status: %q", got)
+	}
+	want := filterProbe + ";show --no-ext-diff --no-textconv --diff-merges=first-parent --format=medium abc123 --"
+	if calls := gitCalls(t, r.all()); strings.Join(calls, ";") != want {
+		t.Errorf("git calls = %v", calls)
+	}
+}
+
 func TestReviewWarnsWhenDiffTruncated(t *testing.T) {
 	r := &scriptedRunner{replies: map[string]exec.Result{
 		gitKey("diff --no-ext-diff --no-textconv --"): {Stdout: "+++ huge", Truncated: true},
