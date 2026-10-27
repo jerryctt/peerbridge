@@ -12,7 +12,8 @@ import (
 
 // ResolvePath decides which config file to load, in priority order:
 //  1. an explicit path (e.g. from the -config flag), if non-empty
-//  2. the HOSTRUNNER_CONFIG environment variable, if set
+//  2. the PEERBRIDGE_CONFIG environment variable, if set (HOSTRUNNER_CONFIG,
+//     the pre-rename name, is still honoured)
 //  3. the first existing file among DefaultPaths(); if none exists, the
 //     first candidate (so the error message names the conventional place).
 //
@@ -21,7 +22,10 @@ func ResolvePath(explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	if env := os.Getenv("HOSTRUNNER_CONFIG"); env != "" {
+	if env := os.Getenv("PEERBRIDGE_CONFIG"); env != "" {
+		return env
+	}
+	if env := os.Getenv("HOSTRUNNER_CONFIG"); env != "" { // legacy name (project was hostrunner-mcp)
 		return env
 	}
 	paths := DefaultPaths()
@@ -37,27 +41,29 @@ func ResolvePath(explicit string) string {
 }
 
 // DefaultPaths lists the conventional config locations for this OS:
-// ~/.config/hostrunner/config.yaml everywhere (the documented default), plus
-// the platform's user config dir when it differs — %APPDATA%\hostrunner on
-// Windows, ~/Library/Application Support/hostrunner on macOS.
+// ~/.config/peerbridge/config.yaml everywhere (the documented default), plus
+// the platform's user config dir when it differs — %APPDATA%\peerbridge on
+// Windows, ~/Library/Application Support/peerbridge on macOS. The same
+// locations under the pre-rename name "hostrunner" come last, so an existing
+// installation keeps working until the user moves its config.
 func DefaultPaths() []string {
 	var paths []string
 	seen := map[string]bool{}
-	add := func(dir string) {
-		if dir == "" {
-			return
-		}
-		p := filepath.Join(dir, "hostrunner", "config.yaml")
-		if !seen[p] {
-			seen[p] = true
-			paths = append(paths, p)
-		}
-	}
+	var dirs []string
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		add(filepath.Join(home, ".config"))
+		dirs = append(dirs, filepath.Join(home, ".config"))
 	}
-	if dir, err := os.UserConfigDir(); err == nil {
-		add(dir)
+	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+		dirs = append(dirs, dir)
+	}
+	for _, name := range []string{"peerbridge", "hostrunner"} {
+		for _, dir := range dirs {
+			p := filepath.Join(dir, name, "config.yaml")
+			if !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
+		}
 	}
 	return paths
 }

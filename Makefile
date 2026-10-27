@@ -1,6 +1,6 @@
 .PHONY: build test vet
 build:
-	go build -o hostrunner ./cmd/hostrunner
+	go build -o peerbridge ./cmd/peerbridge
 test:
 	go test ./...
 vet:

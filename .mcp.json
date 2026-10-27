@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "hostrunner": {
+    "peerbridge": {
       "command": "${CLAUDE_PLUGIN_ROOT}/scripts/launch.sh",
       "args": []
     }

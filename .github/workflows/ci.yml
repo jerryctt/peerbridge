@@ -56,7 +56,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           go vet ./...
-          go build -o /dev/null ./cmd/hostrunner
+          go build -o /dev/null ./cmd/peerbridge
 
   windows-test:
     name: Test on Windows

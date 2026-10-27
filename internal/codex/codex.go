@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/agent"
+	"github.com/jerryctt/peerbridge/internal/agent"
 )
 
 // ReviewArgs builds the `codex review` CLI arguments for the given mode.
@@ -68,7 +68,7 @@ func (b *Backend) ReviewArgs(scope, base, commit, prompt string) ([]string, bool
 //
 // --ignore-user-config skips ~/.codex/config.toml (auth is still read from
 // CODEX_HOME), which is the only way to start the peer without the user's MCP
-// servers — and therefore without any route back into hostrunner. Config
+// servers — and therefore without any route back into peerbridge. Config
 // overrides such as `-c mcp_servers={}` are merged, not replacing, and
 // `mcp_servers.<name>.enabled=false` errors when the entry is absent; both
 // were verified ineffective on a real install. Model and other preferences

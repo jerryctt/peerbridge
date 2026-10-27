@@ -22,7 +22,7 @@ import (
 //	exit <code>      exit with code
 //	sleep <seconds>  sleep (and ignore nothing — the test kills it)
 func TestMain(m *testing.M) {
-	if os.Getenv("HOSTRUNNER_EXEC_HELPER") != "1" {
+	if os.Getenv("PEERBRIDGE_EXEC_HELPER") != "1" {
 		os.Exit(m.Run())
 	}
 	args := os.Args[1:]
@@ -65,7 +65,7 @@ func helper(t *testing.T, args ...string) Request {
 	return Request{
 		Command:        exe,
 		Args:           append([]string{"-test.run=^$", "--"}, args...),
-		Env:            []string{"HOSTRUNNER_EXEC_HELPER=1"},
+		Env:            []string{"PEERBRIDGE_EXEC_HELPER=1"},
 		MaxOutputBytes: 1000,
 	}
 }
@@ -81,8 +81,8 @@ func TestRunCapturesStdoutAndExit(t *testing.T) {
 }
 
 func TestRunAppendsEnv(t *testing.T) {
-	req := helper(t, "env", "HOSTRUNNER_TEST_VAR")
-	req.Env = append(req.Env, "HOSTRUNNER_TEST_VAR=from-request")
+	req := helper(t, "env", "PEERBRIDGE_TEST_VAR")
+	req.Env = append(req.Env, "PEERBRIDGE_TEST_VAR=from-request")
 	r, err := Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Run: %v", err)

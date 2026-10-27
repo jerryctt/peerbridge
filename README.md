@@ -1,11 +1,13 @@
 English | [繁體中文](README_zh.md)
 
-# hostrunner-mcp
+# peerbridge
 
-[![CI](https://github.com/jerryctt/hostrunner-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/jerryctt/hostrunner-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/jerryctt/peerbridge/actions/workflows/ci.yml/badge.svg)](https://github.com/jerryctt/peerbridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Local MCP server + plugin for **Claude** and **Codex**: from either app, ask the *other* vendor's agent for a read-only code review or a multi-turn discussion of your code, running on your machine with your own CLI logins.
+
+> **Renamed from `hostrunner-mcp` (v0.3.1).** The old GitHub URL redirects. If you installed the previous version: the binary, MCP server, plugin and config directory are now called `peerbridge`. Your existing `~/.config/hostrunner/config.yaml` and `HOSTRUNNER_CONFIG` are still read until you move them; re-running `scripts/install-codex.sh` / `scripts/install.ps1` replaces the old `[mcp_servers.hostrunner]` block with `[mcp_servers.peerbridge]`; in Claude Desktop re-install the plugin as **peerbridge** (and remove the old **hostrunner** plugin), or update `claude_desktop_config.json` if you registered the binary by hand. Permission rules change accordingly (`mcp__plugin_peerbridge_peerbridge__*`). The MCP tool names (`review_start`, `chat_start`, `job_status`, `run_command`) are unchanged.
 
 ---
 
@@ -13,11 +15,11 @@ Local MCP server + plugin for **Claude** and **Codex**: from either app, ask the
 
 Coding agents live in their own apps. [Claude](https://claude.ai) (Desktop / Cowork / Code) edits code inside a sandbox that cannot run your host's `codex` CLI; the Codex app cannot ask Claude anything. Yet a second opinion from a *different* model is one of the cheapest ways to catch bugs and blind spots.
 
-**hostrunner-mcp** bridges the gap in both directions:
+**peerbridge** bridges the gap in both directions:
 
 - It runs as a **native process on your Mac or Linux machine**, spawned over stdio by Claude Desktop/Code **or** by Codex (CLI, macOS app, IDE extension).
 - It has access to your host filesystem and to your `codex` and `claude` binaries with their existing logins.
-- The agent in the GUI edits files; hostrunner lets it call the **peer** agent (`codex` from Claude, `claude` from Codex) to **review** the changes or to **discuss** a design over several rounds — always read-only.
+- The agent in the GUI edits files; peerbridge lets it call the **peer** agent (`codex` from Claude, `claude` from Codex) to **review** the changes or to **discuss** a design over several rounds — always read-only.
 - This gives a tight **edit → peer review → edit** loop, or a **debate** between two models, without leaving your editor.
 
 ---
@@ -33,7 +35,7 @@ Coding agents live in their own apps. [Claude](https://claude.ai) (Desktop / Cow
                │ stdio (MCP)                         │ stdio (MCP)
                ▼                                     ▼
 ┌───────────────────────────────────────────────────────────────────┐
-│  HOST MACHINE — hostrunner (native process, one binary)           │
+│  HOST MACHINE — peerbridge (native process, one binary)           │
 │                                                                   │
 │  peer = the other vendor (inferred from the MCP client name)      │
 │                                                                   │
@@ -51,7 +53,7 @@ Coding agents live in their own apps. [Claude](https://claude.ai) (Desktop / Cow
 - **`review_start` / `job_status`** — read-only review of uncommitted changes, a base-branch diff, or a commit, by a peer agent: `codex` runs `codex review`; `claude` runs `claude -p` with a review prompt. Reviews run as **background jobs** because they outlast MCP per-call timeouts (Claude Desktop ~180s, Codex `tool_timeout_sec`); start/status calls are fast, the review itself may run up to your configured `timeout`.
 - **`chat_start` / `job_status`** — send one message to the peer, which can read the repo; the result carries a `session_id` to continue the conversation (`claude -p --resume`, `codex exec resume`). Your GUI agent drives the rounds.
 - **Automatic peer selection** — omit `agent` and a Claude client talks to codex, a Codex client talks to claude. Pass `agent` to pick explicitly.
-- **Read-only peers** — the claude peer gets file-reading tools only (`--tools Read,Grep,Glob`, no shell; hostrunner computes the review diff with read-only git and feeds it to the peer on stdin) and loads no user settings or MCP servers (`--setting-sources "" --strict-mcp-config`); the codex peer runs in codex's own `--sandbox read-only` with `--ignore-user-config`. Neither can reach hostrunner recursively, and your normal CLI logins keep working.
+- **Read-only peers** — the claude peer gets file-reading tools only (`--tools Read,Grep,Glob`, no shell; peerbridge computes the review diff with read-only git and feeds it to the peer on stdin) and loads no user settings or MCP servers (`--setting-sources "" --strict-mcp-config`); the codex peer runs in codex's own `--sandbox read-only` with `--ignore-user-config`. Neither can reach peerbridge recursively, and your normal CLI logins keep working.
 - **`codex_review_start` / `codex_review_status`** — deprecated aliases of `review_start(agent=codex)` / `job_status`; existing installs keep working.
 - **`run_command`** — run any allowlisted CLI (e.g. `git`) in a host folder, as an argv array (never a shell).
 - **Strict security** — root-directory containment, symlink-resolved path checks, fixed read-only argv for peers, command allowlist for `run_command`, no shell ever.
@@ -76,93 +78,93 @@ Coding agents live in their own apps. [Claude](https://claude.ai) (Desktop / Cow
 ### Option 1: Install with `go install` (recommended if you have Go)
 
 ```bash
-go install github.com/jerryctt/hostrunner-mcp/cmd/hostrunner@latest
+go install github.com/jerryctt/peerbridge/cmd/peerbridge@latest
 ```
 
-The binary is placed in `$GOPATH/bin/hostrunner` (typically `~/go/bin/hostrunner`).
+The binary is placed in `$GOPATH/bin/peerbridge` (typically `~/go/bin/peerbridge`).
 
 ### Option 2: Download a release binary
 
-Download the pre-built binary for your platform from the [Releases page](https://github.com/jerryctt/hostrunner-mcp/releases), extract it, and place `hostrunner` somewhere in your `$PATH` (e.g. `/usr/local/bin/hostrunner`; on Windows, `hostrunner.exe` anywhere you like).
+Download the pre-built binary for your platform from the [Releases page](https://github.com/jerryctt/peerbridge/releases), extract it, and place `peerbridge` somewhere in your `$PATH` (e.g. `/usr/local/bin/peerbridge`; on Windows, `peerbridge.exe` anywhere you like).
 
 Every release ships these archives (static binaries, no runtime needed):
 
 | OS | Architectures | Archive |
 |---|---|---|
-| macOS | `amd64` (Intel), `arm64` (Apple silicon) | `hostrunner_<ver>_darwin_<arch>.tar.gz` |
-| Linux | `amd64`, `arm64`, `386` (32-bit x86), `armv6`, `armv7` (32-bit ARM, e.g. Raspberry Pi) | `hostrunner_<ver>_linux_<arch>.tar.gz` |
-| Windows | `amd64`, `arm64`, `386` | `hostrunner_<ver>_windows_<arch>.zip` |
+| macOS | `amd64` (Intel), `arm64` (Apple silicon) | `peerbridge_<ver>_darwin_<arch>.tar.gz` |
+| Linux | `amd64`, `arm64`, `386` (32-bit x86), `armv6`, `armv7` (32-bit ARM, e.g. Raspberry Pi) | `peerbridge_<ver>_linux_<arch>.tar.gz` |
+| Windows | `amd64`, `arm64`, `386` | `peerbridge_<ver>_windows_<arch>.zip` |
 
 The installers below pick the right one automatically (`uname -m` / `PROCESSOR_ARCHITECTURE`) and verify it against the release `checksums.txt`.
 
 ### Option 3: Build from source
 
 ```bash
-git clone https://github.com/jerryctt/hostrunner-mcp.git
-cd hostrunner-mcp
-make build          # produces ./hostrunner
+git clone https://github.com/jerryctt/peerbridge.git
+cd peerbridge
+make build          # produces ./peerbridge
 ```
 
 ### Option 4: Install as a Claude plugin (marketplace)
 
-**In Claude Desktop:** go to Add marketplace → enter `jerryctt/hostrunner-mcp`, then install the **hostrunner** plugin.
+**In Claude Desktop:** go to Add marketplace → enter `jerryctt/peerbridge`, then install the **peerbridge** plugin.
 
 **In Claude Code:**
 ```
-/plugin marketplace add jerryctt/hostrunner-mcp
+/plugin marketplace add jerryctt/peerbridge
 ```
-Then install the `hostrunner` plugin from the listing.
+Then install the `peerbridge` plugin from the listing.
 
 Installing via the marketplace installs the MCP server (auto-started by the bundled launcher) and the `peer-review`, `peer-chat` and `codex-loop` skills in one step.
 
-**Prerequisite — create a config file:** the server looks for its config at `~/.config/hostrunner/config.yaml` by default. Create it from `examples/config.example.yaml` before starting Claude Desktop/Code:
+**Prerequisite — create a config file:** the server looks for its config at `~/.config/peerbridge/config.yaml` by default. Create it from `examples/config.example.yaml` before starting Claude Desktop/Code:
 
 ```bash
-mkdir -p ~/.config/hostrunner
-cp examples/config.example.yaml ~/.config/hostrunner/config.yaml
+mkdir -p ~/.config/peerbridge
+cp examples/config.example.yaml ~/.config/peerbridge/config.yaml
 # edit the file to match your paths
 ```
 
-You can override the config path with the `-config` flag or the `HOSTRUNNER_CONFIG` environment variable.
+You can override the config path with the `-config` flag or the `PEERBRIDGE_CONFIG` environment variable.
 
-> **macOS GUI apps and environment variables:** because macOS does not pass shell environment variables to GUI apps like Claude Desktop or the Codex app, setting `HOSTRUNNER_CONFIG` (or `PATH`) in your shell profile has no effect when the server is launched from a GUI. Place your config at the default path, and if `codex`/`claude` are not found set `agents.<name>.command` to an absolute path.
+> **macOS GUI apps and environment variables:** because macOS does not pass shell environment variables to GUI apps like Claude Desktop or the Codex app, setting `PEERBRIDGE_CONFIG` (or `PATH`) in your shell profile has no effect when the server is launched from a GUI. Place your config at the default path, and if `codex`/`claude` are not found set `agents.<name>.command` to an absolute path.
 
 **macOS/Linux:** the bundled `scripts/launch.sh` launcher downloads the matching release binary on first run and verifies it against the release `checksums.txt` before executing it. No manual binary install needed.
 
-**Windows:** the marketplace plugin's launcher is a POSIX shell script, so on Windows the plugin's MCP server will not start by itself (its skills still work). Use `scripts\install.ps1` instead — see "Install on Windows" below — which registers `hostrunner.exe` directly in `claude_desktop_config.json`.
+**Windows:** the marketplace plugin's launcher is a POSIX shell script, so on Windows the plugin's MCP server will not start by itself (its skills still work). Use `scripts\install.ps1` instead — see "Install on Windows" below — which registers `peerbridge.exe` directly in `claude_desktop_config.json`.
 
 > **Trust note:** the launcher downloads and runs a binary from GitHub Releases, checksum-verified against the release. Review the source at `scripts/launch.sh` and `scripts/lib.sh` if you have concerns.
 
 ### Install on Windows (Codex and/or Claude Desktop)
 
 ```powershell
-git clone https://github.com/jerryctt/hostrunner-mcp.git
-cd hostrunner-mcp
+git clone https://github.com/jerryctt/peerbridge.git
+cd peerbridge
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1          # Codex + Claude Desktop
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Codex   # or -Claude for one of them
-# ... -Local .\hostrunner.exe to use a locally built binary; -NoClaudeConfigWrite to only print the JSON snippet
+# ... -Local .\peerbridge.exe to use a locally built binary; -NoClaudeConfigWrite to only print the JSON snippet
 ```
 
-Works with Windows PowerShell 5.1 and PowerShell 7. It downloads and checksum-verifies the matching zip, installs `hostrunner.exe` to `%LOCALAPPDATA%\hostrunner\`, creates `%APPDATA%\hostrunner\config.yaml` from the example, writes the Codex `[mcp_servers.hostrunner]` block to `%USERPROFILE%\.codex\config.toml` and the skills to `%USERPROFILE%\.agents\skills\`, and merges `mcpServers.hostrunner` into `%APPDATA%\Claude\claude_desktop_config.json` (a `.bak.hostrunner` copy is kept). Edit `allowed_roots` (Windows paths such as `C:/Users/you/code` are fine), then restart the apps.
+Works with Windows PowerShell 5.1 and PowerShell 7. It downloads and checksum-verifies the matching zip, installs `peerbridge.exe` to `%LOCALAPPDATA%\peerbridge\`, creates `%APPDATA%\peerbridge\config.yaml` from the example, writes the Codex `[mcp_servers.peerbridge]` block to `%USERPROFILE%\.codex\config.toml` and the skills to `%USERPROFILE%\.agents\skills\`, and merges `mcpServers.peerbridge` into `%APPDATA%\Claude\claude_desktop_config.json` (a `.bak.peerbridge` copy is kept). Edit `allowed_roots` (Windows paths such as `C:/Users/you/code` are fine), then restart the apps.
 
-Windows notes: `codex` and `claude` are usually `.cmd` shims from npm — if the GUI app cannot find them, set `agents.codex.command` / `agents.claude.command` to the full path printed by `(Get-Command claude).Source`. On a timeout hostrunner kills the whole peer process tree with `taskkill /T`.
+Windows notes: `codex` and `claude` are usually `.cmd` shims from npm — if the GUI app cannot find them, set `agents.codex.command` / `agents.claude.command` to the full path printed by `(Get-Command claude).Source`. On a timeout peerbridge kills the whole peer process tree with `taskkill /T`.
 
 ### Install for Codex (CLI, macOS app, IDE extension)
 
 ```bash
-git clone https://github.com/jerryctt/hostrunner-mcp.git
-cd hostrunner-mcp
-scripts/install-codex.sh            # or: scripts/install-codex.sh --local ./hostrunner
+git clone https://github.com/jerryctt/peerbridge.git
+cd peerbridge
+scripts/install-codex.sh            # or: scripts/install-codex.sh --local ./peerbridge
 ```
 
-This downloads and verifies the release binary (links it at `~/.local/bin/hostrunner`), writes a `[mcp_servers.hostrunner]` block to `~/.codex/config.toml` (with `tool_timeout_sec = 120`), installs the `peer-review` and `peer-chat` skills into `~/.agents/skills/`, and creates `~/.config/hostrunner/config.yaml` if missing. Edit `allowed_roots`, then restart the Codex app (the CLI, the macOS app and the IDE extension share this configuration). In Codex, say "peer review my changes" or "ask claude what it thinks about this design".
+This downloads and verifies the release binary (links it at `~/.local/bin/peerbridge`), writes a `[mcp_servers.peerbridge]` block to `~/.codex/config.toml` (with `tool_timeout_sec = 120`), installs the `peer-review` and `peer-chat` skills into `~/.agents/skills/`, and creates `~/.config/peerbridge/config.yaml` if missing. Edit `allowed_roots`, then restart the Codex app (the CLI, the macOS app and the IDE extension share this configuration). In Codex, say "peer review my changes" or "ask claude what it thinks about this design".
 
 Manual equivalent:
 
 ```toml
 # ~/.codex/config.toml
-[mcp_servers.hostrunner]
-command = "/Users/you/.local/bin/hostrunner"
+[mcp_servers.peerbridge]
+command = "/Users/you/.local/bin/peerbridge"
 tool_timeout_sec = 120
 startup_timeout_sec = 20
 ```
@@ -173,16 +175,16 @@ startup_timeout_sec = 20
 
 The server resolves its config file in this order:
 1. The path given by the `-config` flag, if provided.
-2. The `HOSTRUNNER_CONFIG` environment variable, if set.
-3. The first of these that exists, otherwise the first one: `~/.config/hostrunner/config.yaml` (all platforms), then the OS user config dir — `%APPDATA%\hostrunner\config.yaml` on Windows, `~/Library/Application Support/hostrunner/config.yaml` on macOS.
+2. The `PEERBRIDGE_CONFIG` environment variable, if set.
+3. The first of these that exists, otherwise the first one: `~/.config/peerbridge/config.yaml` (all platforms), then the OS user config dir — `%APPDATA%\peerbridge\config.yaml` on Windows, `~/Library/Application Support/peerbridge/config.yaml` on macOS.
 
-**Recommended:** place your config at `~/.config/hostrunner/config.yaml`. GUI apps do not inherit shell environment variables, so `HOSTRUNNER_CONFIG` set in your shell profile will not be visible to a server launched from Claude Desktop or the Codex app.
+**Recommended:** place your config at `~/.config/peerbridge/config.yaml`. GUI apps do not inherit shell environment variables, so `PEERBRIDGE_CONFIG` set in your shell profile will not be visible to a server launched from Claude Desktop or the Codex app.
 
 Create a config file from the provided example — **the paths in it are placeholders; change them to match your own setup**:
 
 ```bash
-mkdir -p ~/.config/hostrunner
-cp examples/config.example.yaml ~/.config/hostrunner/config.yaml
+mkdir -p ~/.config/peerbridge
+cp examples/config.example.yaml ~/.config/peerbridge/config.yaml
 ```
 
 ```yaml
@@ -213,7 +215,7 @@ max_output_bytes: 200000
 status_poll: 100s
 
 # Tee peer CLI output to the server's stderr in real time (default: true).
-# Claude Desktop captures this in ~/Library/Logs/Claude/mcp-server-hostrunner.log.
+# Claude Desktop captures this in ~/Library/Logs/Claude/mcp-server-peerbridge.log.
 stream_output: true
 
 # Peer agents. Both optional; defaults shown. Use absolute paths when the GUI
@@ -241,17 +243,17 @@ Add the following to your Claude Desktop config (usually `~/Library/Application 
 ```json
 {
   "mcpServers": {
-    "hostrunner": {
-      "command": "/usr/local/bin/hostrunner",
-      "args": ["-config", "/Users/yourname/.config/hostrunner/config.yaml"]
+    "peerbridge": {
+      "command": "/usr/local/bin/peerbridge",
+      "args": ["-config", "/Users/yourname/.config/peerbridge/config.yaml"]
     }
   }
 }
 ```
 
-Replace `/usr/local/bin/hostrunner` with the actual path to the binary (e.g. `~/go/bin/hostrunner`), and update the config path accordingly. The file `examples/claude_desktop_config.example.json` in this repo shows the same snippet.
+Replace `/usr/local/bin/peerbridge` with the actual path to the binary (e.g. `~/go/bin/peerbridge`), and update the config path accordingly. The file `examples/claude_desktop_config.example.json` in this repo shows the same snippet.
 
-Restart Claude Desktop after editing the config. You should see **hostrunner** appear in the MCP servers list.
+Restart Claude Desktop after editing the config. You should see **peerbridge** appear in the MCP servers list.
 
 ---
 
@@ -363,8 +365,8 @@ Run an allowlisted command (argv, no shell) in a host folder.
 Every host asks before running an MCP tool unless you tell it not to. A review is one `review_start` plus several `job_status` polls, so with the defaults you get a prompt every ~50 seconds. Three knobs:
 
 - **Fewer polls.** `status_poll` in `config.yaml` is how long `job_status` waits before answering "running". The example sets `100s` (safe with the `tool_timeout_sec = 120` our installers write and with Claude Desktop's ~180s); the built-in default is `50s`. It must stay below the client's per-call timeout.
-- **Codex.** The installers write `default_tools_approval_mode = "writes"` into the `[mcp_servers.hostrunner]` block: Codex then only asks for tools that are *not* marked read-only. `review_start`, `chat_start` and `job_status` carry the MCP `readOnlyHint` annotation (peers never modify anything), so they run without prompts; `run_command` still asks. Set it to `"approve"` to never ask, or override one tool with `[mcp_servers.hostrunner.tools.run_command] approval_mode = "approve"`.
-- **Claude.** In Claude Desktop / Cowork pick **Always allow** on the first prompt for each tool (it is remembered per tool). In Claude Code add a permission rule to `~/.claude/settings.json`: `{"permissions": {"allow": ["mcp__hostrunner__*"]}}` — for the marketplace plugin the server is named `plugin_hostrunner_hostrunner`, so use `"mcp__plugin_hostrunner_hostrunner__*"`. Claude Code does not yet act on `readOnlyHint` for MCP tools, hence the explicit rule.
+- **Codex.** The installers write `default_tools_approval_mode = "writes"` into the `[mcp_servers.peerbridge]` block: Codex then only asks for tools that are *not* marked read-only. `review_start`, `chat_start` and `job_status` carry the MCP `readOnlyHint` annotation (peers never modify anything), so they run without prompts; `run_command` still asks. Set it to `"approve"` to never ask, or override one tool with `[mcp_servers.peerbridge.tools.run_command] approval_mode = "approve"`.
+- **Claude.** In Claude Desktop / Cowork pick **Always allow** on the first prompt for each tool (it is remembered per tool). In Claude Code add a permission rule to `~/.claude/settings.json`: `{"permissions": {"allow": ["mcp__peerbridge__*"]}}` — for the marketplace plugin the server is named `plugin_peerbridge_peerbridge`, so use `"mcp__plugin_peerbridge_peerbridge__*"`. Claude Code does not yet act on `readOnlyHint` for MCP tools, hence the explicit rule.
 
 ## Skills
 
@@ -396,8 +398,8 @@ For a **discussion**, use `chat_start` with a focused message, read the reply fr
 
 - **Root-directory containment.** Every path argument is resolved (including symlinks) and checked against `allowed_roots`.
 - **No shell.** Commands are run as argv arrays via `os/exec`. There is no `sh -c`, no glob expansion, no shell injection.
-- **Read-only peers.** Peer argv is fixed by the server. codex uses `codex review` / `codex exec --sandbox read-only --ignore-user-config` (OS-level sandbox). claude has no sandbox, so it gets no shell at all: `-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`. For claude reviews hostrunner runs `git status`/`git diff`/`git show` itself and pipes the result to the peer on stdin — read-only and hardened: refs are validated (never option-like), `--no-ext-diff --no-textconv`, `core.fsmonitor=false`, `core.hooksPath=/dev/null`, global/system git config ignored (`GIT_CONFIG_GLOBAL=/dev/null` etc.) and `GIT_OPTIONAL_LOCKS=0`, so no diff helpers, filters or hooks run and nothing is written. Only `agents.<name>.command` and `extra_args` come from config; `allowed_commands` applies to `run_command`.
-- **No inherited permissions, no recursion.** `--setting-sources ""` keeps the user's own Claude permission rules and hooks out of the peer (`--allowedTools` is additive to settings, so this makes it the whole list); `--strict-mcp-config` (claude) and `--ignore-user-config` (codex) start the peer with none of the user's MCP servers, so it cannot load hostrunner itself. `--bare` is deliberately not used: it disables OAuth/keychain auth and would break subscription logins. `-c mcp_servers={}` was rejected: config overrides merge, they do not replace.
+- **Read-only peers.** Peer argv is fixed by the server. codex uses `codex review` / `codex exec --sandbox read-only --ignore-user-config` (OS-level sandbox). claude has no sandbox, so it gets no shell at all: `-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`. For claude reviews peerbridge runs `git status`/`git diff`/`git show` itself and pipes the result to the peer on stdin — read-only and hardened: refs are validated (never option-like), `--no-ext-diff --no-textconv`, `core.fsmonitor=false`, `core.hooksPath=/dev/null`, global/system git config ignored (`GIT_CONFIG_GLOBAL=/dev/null` etc.) and `GIT_OPTIONAL_LOCKS=0`, so no diff helpers, filters or hooks run and nothing is written. Only `agents.<name>.command` and `extra_args` come from config; `allowed_commands` applies to `run_command`.
+- **No inherited permissions, no recursion.** `--setting-sources ""` keeps the user's own Claude permission rules and hooks out of the peer (`--allowedTools` is additive to settings, so this makes it the whole list); `--strict-mcp-config` (claude) and `--ignore-user-config` (codex) start the peer with none of the user's MCP servers, so it cannot load peerbridge itself. `--bare` is deliberately not used: it disables OAuth/keychain auth and would break subscription logins. `-c mcp_servers={}` was rejected: config overrides merge, they do not replace.
 - **Command allowlist** for `run_command`.
 - **Native host process, not Docker.** Running in a container would break access to the host CLIs and their logins.
 - **Host paths only.** Any path beginning with `/sessions/` is rejected with a hint.
@@ -411,8 +413,6 @@ make build   # Build the binary
 make test    # Run all tests
 make vet     # Vet the code
 ```
-
-Design docs live in `docs/superpowers/specs/`.
 
 ---
 

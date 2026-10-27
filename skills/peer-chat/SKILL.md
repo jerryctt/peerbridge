@@ -3,7 +3,7 @@ name: peer-chat
 description: >
   Hold a multi-turn discussion with the other vendor's coding agent (Codex when
   you are Claude, Claude when you are Codex) about a design, a bug, or a plan,
-  using the hostrunner `chat_start` / `job_status` tools. Use when the user says
+  using the peerbridge `chat_start` / `job_status` tools. Use when the user says
   "ask codex/claude what it thinks", "discuss this with the other agent",
   "debate this design", "get a second opinion", or "what would codex/claude do".
 ---

@@ -3,7 +3,7 @@ name: peer-review
 description: >
   Ask the other vendor's coding agent (Codex when you are Claude, Claude when
   you are Codex) for a read-only code review of the current changes via the
-  hostrunner MCP tools, then fix what it finds and re-review until clean. Use
+  peerbridge MCP tools, then fix what it finds and re-review until clean. Use
   when the user says "peer review", "get a second opinion on my changes",
   "have codex/claude review this", "review loop", or "cross-review".
 ---
@@ -21,7 +21,7 @@ description: >
 
 The peer is strictly read-only: it can read files in the repo (and codex can
 run commands inside its own read-only sandbox), but it cannot edit. For a
-claude peer, hostrunner computes the diff with read-only git and hands it to
+claude peer, peerbridge computes the diff with read-only git and hands it to
 the peer on stdin. All edits are yours.
 
 Reviews run as background jobs because they often take several minutes —

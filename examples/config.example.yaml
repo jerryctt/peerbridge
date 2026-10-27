@@ -8,7 +8,7 @@ allowed_commands:
 # run_command). Needs a unit (600s, 10m) — a bare number is rejected.
 # NOTE: this file is read once at server startup; restart Claude Desktop /
 # the Codex app after editing. The effective values are logged as
-# "config loaded" (Claude: ~/Library/Logs/Claude/mcp-server-hostrunner.log).
+# "config loaded" (Claude: ~/Library/Logs/Claude/mcp-server-peerbridge.log).
 timeout: 600s
 max_output_bytes: 200000
 # How long job_status waits for a job before answering "running". Longer =

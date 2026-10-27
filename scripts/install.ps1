@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Install hostrunner on Windows for Codex and/or Claude Desktop.
+  Install peerbridge on Windows for Codex and/or Claude Desktop.
 
 .DESCRIPTION
   Works with Windows PowerShell 5.1 and PowerShell 7+.
@@ -8,15 +8,15 @@
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1            # Codex + Claude Desktop
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Codex     # Codex only
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Claude    # Claude Desktop only
-    ... -Local .\hostrunner.exe      use a locally built binary instead of downloading
+    ... -Local .\peerbridge.exe      use a locally built binary instead of downloading
     ... -Version 0.3.1               pin a release (default: version in .claude-plugin\plugin.json)
-    ... -ServerName hostrunner       MCP server name used in both configs
+    ... -ServerName peerbridge       MCP server name used in both configs
     ... -NoClaudeConfigWrite         print the Claude Desktop JSON snippet instead of merging it
 
   What it does (idempotent):
-    1. downloads hostrunner_<ver>_windows_<arch>.zip from GitHub Releases, verifies
-       it against checksums.txt and installs hostrunner.exe to %LOCALAPPDATA%\hostrunner
-    2. creates %APPDATA%\hostrunner\config.yaml from the example if missing
+    1. downloads peerbridge_<ver>_windows_<arch>.zip from GitHub Releases, verifies
+       it against checksums.txt and installs peerbridge.exe to %LOCALAPPDATA%\peerbridge
+    2. creates %APPDATA%\peerbridge\config.yaml from the example if missing
     3. Codex: writes a managed [mcp_servers.<name>] block to %USERPROFILE%\.codex\config.toml
        (refuses if an unmanaged definition exists), copies skills\peer-review and
        skills\peer-chat to %USERPROFILE%\.agents\skills, validates with 'codex mcp list'
@@ -27,7 +27,7 @@
 param(
   [string]$Local = "",
   [string]$Version = "",
-  [string]$ServerName = "hostrunner",
+  [string]$ServerName = "peerbridge",
   [switch]$Codex,
   [switch]$Claude,
   [switch]$NoClaudeConfigWrite
@@ -35,7 +35,7 @@ param(
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$Repo = "jerryctt/hostrunner-mcp"
+$Repo = "jerryctt/peerbridge"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 # Windows PowerShell 5.1 reads BOM-less files and writes with the ANSI code
@@ -51,9 +51,9 @@ if (-not $Codex -and -not $Claude) { $Codex = $true; $Claude = $true }
 $onWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or ($PSVersionTable.PSVersion.Major -ge 6 -and $IsWindows)
 if ($onWindows) {
   $home_ = $env:USERPROFILE
-  $exeName = "hostrunner.exe"
-  $installDir = Join-Path $env:LOCALAPPDATA "hostrunner"
-  $hrConfig = Join-Path (Join-Path $env:APPDATA "hostrunner") "config.yaml"
+  $exeName = "peerbridge.exe"
+  $installDir = Join-Path $env:LOCALAPPDATA "peerbridge"
+  $hrConfig = Join-Path (Join-Path $env:APPDATA "peerbridge") "config.yaml"
   $claudeConfig = Join-Path (Join-Path $env:APPDATA "Claude") "claude_desktop_config.json"
   switch ($env:PROCESSOR_ARCHITECTURE) {
     "AMD64" { $arch = "amd64" }
@@ -65,9 +65,9 @@ if ($onWindows) {
 } else {
   # Non-Windows PowerShell (testing / macOS / Linux users who prefer pwsh).
   $home_ = $HOME
-  $exeName = "hostrunner"
-  $installDir = Join-Path $HOME ".local/share/hostrunner"
-  $hrConfig = Join-Path $HOME ".config/hostrunner/config.yaml"
+  $exeName = "peerbridge"
+  $installDir = Join-Path $HOME ".local/share/peerbridge"
+  $hrConfig = Join-Path $HOME ".config/peerbridge/config.yaml"
   if ($IsMacOS) { $claudeConfig = Join-Path $HOME "Library/Application Support/Claude/claude_desktop_config.json"; $os = "darwin" }
   else { $claudeConfig = Join-Path $HOME ".config/Claude/claude_desktop_config.json"; $os = "linux" }
   $rawArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
@@ -102,9 +102,9 @@ if ($Local) {
     Write-Host "binary: $bin (copied from $src)"
   }
 } else {
-  $archive = "hostrunner_${Version}_${os}_${arch}.$ext"
+  $archive = "peerbridge_${Version}_${os}_${arch}.$ext"
   $base = "https://github.com/$Repo/releases/download/v$Version"
-  $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("hostrunner-" + [guid]::NewGuid().ToString("N"))
+  $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("peerbridge-" + [guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $tmp | Out-Null
   try {
     Write-Host "downloading $archive (v$Version)..."
@@ -133,7 +133,7 @@ if ($Local) {
   }
 }
 
-# ---- 2. hostrunner config -----------------------------------------------------
+# ---- 2. peerbridge config -----------------------------------------------------
 if (-not (Test-Path $hrConfig)) {
   New-Item -ItemType Directory -Force -Path (Split-Path $hrConfig) | Out-Null
   $example = Read-Text (Join-Path $Root "examples\config.example.yaml")
@@ -153,17 +153,20 @@ if ($Codex) {
   New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
   if (-not (Test-Path $cfg)) { Write-Text $cfg "" }
 
-  $begin = "# >>> hostrunner (managed by install.ps1) >>>"
-  $end = "# <<< hostrunner <<<"
-  # Also recognise the block written by scripts/install-codex.sh.
-  $beginSh = "# >>> hostrunner (managed by install-codex.sh) >>>"
+  $begin = "# >>> peerbridge (managed by install.ps1) >>>"
+  $end = "# <<< peerbridge <<<"
+  # Also recognise the block written by scripts/install-codex.sh, and the
+  # blocks written before the project was renamed from hostrunner-mcp.
+  $beginSh = "# >>> peerbridge (managed by install-codex.sh) >>>"
+  $legacyBegins = @("# >>> hostrunner (managed by install.ps1) >>>", "# >>> hostrunner (managed by install-codex.sh) >>>")
+  $legacyEnd = "# <<< hostrunner <<<"
 
   $lines = @((Read-Text $cfg) -split "`r?`n")
   $kept = New-Object System.Collections.Generic.List[string]
   $skip = $false
   foreach ($l in $lines) {
-    if ($l -eq $begin -or $l -eq $beginSh) { $skip = $true; continue }
-    if ($l -eq $end) { $skip = $false; continue }
+    if ($l -eq $begin -or $l -eq $beginSh -or $legacyBegins -contains $l) { $skip = $true; continue }
+    if ($l -eq $end -or $l -eq $legacyEnd) { $skip = $false; continue }
     if (-not $skip) { $kept.Add($l) }
   }
   while ($kept.Count -gt 0 -and $kept[$kept.Count - 1] -match '^\s*$') { $kept.RemoveAt($kept.Count - 1) }
@@ -185,14 +188,14 @@ if ($Codex) {
     throw "$cfg already defines mcp_servers.$ServerName outside the block managed by this installer. Remove that definition (or re-run with -ServerName <other>). Nothing was changed."
   }
 
-  $backup = "$cfg.bak.hostrunner"
+  $backup = "$cfg.bak.peerbridge"
   Copy-Item -Force $cfg $backup
   # TOML basic string: escape backslash and double quote so any path (including
   # ones with apostrophes, e.g. C:\Users\O'Brien) stays valid.
   function ConvertTo-TomlString([string]$s) { '"' + (($s -replace '\\', '\\') -replace '"', '\"') + '"' }
   $tomlBin = ConvertTo-TomlString $bin
   # Pass -config explicitly so Codex and Claude Desktop use the same file this
-  # installer created, even if a ~/.config/hostrunner/config.yaml also exists.
+  # installer created, even if a ~/.config/peerbridge/config.yaml also exists.
   $tomlCfg = ConvertTo-TomlString $hrConfig
   $block = @(
     "",
@@ -200,7 +203,7 @@ if ($Codex) {
     "[mcp_servers.$ServerName]",
     "command = $tomlBin",
     "args = [""-config"", $tomlCfg]",
-    "# review/chat jobs are polled via job_status; keep hostrunner's status_poll",
+    "# review/chat jobs are polled via job_status; keep peerbridge's status_poll",
     "# (config.yaml) below this tool timeout.",
     "tool_timeout_sec = 120",
     "startup_timeout_sec = 20",
@@ -260,7 +263,7 @@ if ($Claude) {
     if (Test-Path $claudeConfig) {
       $raw = Read-Text $claudeConfig
       $json = if ($raw -and $raw.Trim()) { $raw | ConvertFrom-Json } else { New-Object PSObject }
-      Copy-Item -Force $claudeConfig "$claudeConfig.bak.hostrunner"
+      Copy-Item -Force $claudeConfig "$claudeConfig.bak.peerbridge"
     } else {
       $json = New-Object PSObject
     }
@@ -277,7 +280,7 @@ if ($Claude) {
       $servers | Add-Member -MemberType NoteProperty -Name $ServerName -Value $entryObj
     }
     Write-Text $claudeConfig ($json | ConvertTo-Json -Depth 10)
-    Write-Host "claude desktop: mcpServers.$ServerName written to $claudeConfig (backup: .bak.hostrunner)"
+    Write-Host "claude desktop: mcpServers.$ServerName written to $claudeConfig (backup: .bak.peerbridge)"
   }
 }
 

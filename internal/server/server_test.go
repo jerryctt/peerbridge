@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/agent"
-	"github.com/jerryctt/hostrunner-mcp/internal/claude"
-	"github.com/jerryctt/hostrunner-mcp/internal/codex"
-	"github.com/jerryctt/hostrunner-mcp/internal/config"
-	"github.com/jerryctt/hostrunner-mcp/internal/exec"
+	"github.com/jerryctt/peerbridge/internal/agent"
+	"github.com/jerryctt/peerbridge/internal/claude"
+	"github.com/jerryctt/peerbridge/internal/codex"
+	"github.com/jerryctt/peerbridge/internal/config"
+	"github.com/jerryctt/peerbridge/internal/exec"
 	"github.com/rs/zerolog"
 )
 
@@ -315,7 +315,7 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 	if req.MaxOutputBytes != 0 {
 		t.Errorf("structured peer output must not be pre-truncated, got cap %d", req.MaxOutputBytes)
 	}
-	// hostrunner computed the diff itself with read-only git, since the
+	// peerbridge computed the diff itself with read-only git, since the
 	// claude peer has no shell; "--" ends option parsing after the ref.
 	// base scope diffs the WORKTREE against the merge-base (not base...HEAD),
 	// so uncommitted fixes from the edit→review loop are reviewed too.

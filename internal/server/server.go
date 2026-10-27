@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/agent"
-	"github.com/jerryctt/hostrunner-mcp/internal/claude"
-	"github.com/jerryctt/hostrunner-mcp/internal/codex"
-	"github.com/jerryctt/hostrunner-mcp/internal/config"
-	"github.com/jerryctt/hostrunner-mcp/internal/exec"
+	"github.com/jerryctt/peerbridge/internal/agent"
+	"github.com/jerryctt/peerbridge/internal/claude"
+	"github.com/jerryctt/peerbridge/internal/codex"
+	"github.com/jerryctt/peerbridge/internal/config"
+	"github.com/jerryctt/peerbridge/internal/exec"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog"
@@ -21,13 +21,13 @@ import (
 
 // version is reported in the MCP initialize handshake. Keep in sync with
 // .claude-plugin/plugin.json.
-const version = "0.3.0"
+const version = "0.3.1"
 
 // New builds the MCP server. The returned shutdown func cancels any
 // still-running background jobs (killing their CLI process groups) and
 // should be called after the server stops serving.
 func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCPServer, func()) {
-	s := mcpserver.NewMCPServer("hostrunner", version, mcpserver.WithRecovery())
+	s := mcpserver.NewMCPServer("peerbridge", version, mcpserver.WithRecovery())
 	svc := NewService(cfg, r, log)
 	statusPoll := cfg.StatusPoll
 	if statusPoll <= 0 {
@@ -417,7 +417,7 @@ func (s *Service) filterOverrides(ctx context.Context, dir string) ([]string, er
 
 // gitArgs returns the read-only git invocations whose output describes the
 // review scope. Used only for backends without a native review command: the
-// claude peer has no shell, so hostrunner computes the diff for it. Refs were
+// claude peer has no shell, so peerbridge computes the diff for it. Refs were
 // validated by agent.ValidateRef (never option-like); the trailing "--" ends
 // option parsing anyway so a ref can only ever be a revision.
 //

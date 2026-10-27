@@ -1,25 +1,25 @@
 #!/usr/bin/env sh
-# Install hostrunner for Codex (CLI, macOS app and IDE extension share the
+# Install peerbridge for Codex (CLI, macOS app and IDE extension share the
 # same ~/.codex/config.toml and ~/.agents/skills).
 #
 #   scripts/install-codex.sh                        # download release binary
-#   scripts/install-codex.sh --local ./hostrunner   # use a locally built binary
-#   options: --version X.Y.Z   --server-name NAME (default hostrunner)
+#   scripts/install-codex.sh --local ./peerbridge   # use a locally built binary
+#   options: --version X.Y.Z   --server-name NAME (default peerbridge)
 #
 # What it does (idempotent):
 #   1. fetches the binary (downloaded + checksum-verified, or --local)
 #   2. writes a [mcp_servers.<name>] block into ~/.codex/config.toml
 #      (replacing a previous managed block, leaving the rest untouched;
 #      refuses if an unmanaged [mcp_servers.<name>] table already exists)
-#      and links the binary at ~/.local/bin/hostrunner
+#      and links the binary at ~/.local/bin/peerbridge
 #   3. copies skills/peer-review and skills/peer-chat into ~/.agents/skills/
-#   4. creates ~/.config/hostrunner/config.yaml from the example if missing
+#   4. creates ~/.config/peerbridge/config.yaml from the example if missing
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/lib.sh"
 
-LOCAL=""; VER=""; NAME="hostrunner"
+LOCAL=""; VER=""; NAME="peerbridge"
 while [ $# -gt 0 ]; do
   case "$1" in
     --local) LOCAL="$2"; shift 2 ;;
@@ -39,7 +39,7 @@ if [ -n "$LOCAL" ]; then
   BIN="$(cd "$(dirname "$LOCAL")" && pwd)/$(basename "$LOCAL")"
   [ -x "$BIN" ] || { echo "not executable: $BIN" >&2; exit 1; }
 else
-  BIN="$(hostrunner_ensure_binary "$VER")"
+  BIN="$(peerbridge_ensure_binary "$VER")"
 fi
 
 # 2. ~/.codex/config.toml
@@ -47,14 +47,17 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CFG="$CODEX_HOME/config.toml"
 mkdir -p "$CODEX_HOME"
 [ -f "$CFG" ] || : > "$CFG"
-BEGIN="# >>> hostrunner (managed by install-codex.sh) >>>"
-END="# <<< hostrunner <<<"
+BEGIN="# >>> peerbridge (managed by install-codex.sh) >>>"
+END="# <<< peerbridge <<<"
+# Blocks written before the project was renamed from hostrunner-mcp.
+OLD_BEGIN="# >>> hostrunner (managed by install-codex.sh) >>>"
+OLD_END="# <<< hostrunner <<<"
 tmp="$(mktemp)"
-# Drop a previous managed block, then trailing blank lines, so re-running
-# replaces the block instead of appending a second one.
-awk -v b="$BEGIN" -v e="$END" '
-  $0 == b { skip = 1; next }
-  $0 == e { skip = 0; next }
+# Drop a previous managed block (new or legacy markers), then trailing blank
+# lines, so re-running replaces the block instead of appending a second one.
+awk -v b="$BEGIN" -v e="$END" -v ob="$OLD_BEGIN" -v oe="$OLD_END" '
+  $0 == b || $0 == ob { skip = 1; next }
+  $0 == e || $0 == oe { skip = 0; next }
   !skip { lines[++n] = $0 }
   END {
     while (n > 0 && lines[n] ~ /^[[:space:]]*$/) n--
@@ -77,7 +80,7 @@ conflict=0
 if grep -Eq "^[[:space:]]*$PARENT[[:space:]]*=" "$tmp"; then
   rm -f "$tmp"
   echo "error: $CFG defines mcp_servers as an inline table (mcp_servers = { ... }); a new sub-table cannot be appended to it." >&2
-  echo "       Convert it to [mcp_servers.<name>] tables (or add hostrunner inside the inline table by hand) and re-run. Nothing was changed." >&2
+  echo "       Convert it to [mcp_servers.<name>] tables (or add peerbridge inside the inline table by hand) and re-run. Nothing was changed." >&2
   exit 1
 fi
 if grep -Eq "$HDR" "$tmp" || grep -Eq "$DOTTED" "$tmp"; then
@@ -92,7 +95,7 @@ if [ "$conflict" = 1 ]; then
   echo "       Remove that definition (or re-run with --server-name <other>) and try again. Nothing was changed." >&2
   exit 1
 fi
-BACKUP="$CFG.bak.hostrunner"
+BACKUP="$CFG.bak.peerbridge"
 cp "$CFG" "$BACKUP"
 mv "$tmp" "$CFG"
 cat >> "$CFG" <<EOF
@@ -101,7 +104,7 @@ $BEGIN
 [mcp_servers.$NAME]
 command = "$BIN"
 args = []
-# review/chat jobs are polled via job_status; keep hostrunner's status_poll
+# review/chat jobs are polled via job_status; keep peerbridge's status_poll
 # (config.yaml) below this tool timeout.
 tool_timeout_sec = 120
 startup_timeout_sec = 20
@@ -125,7 +128,7 @@ fi
 rm -f "$BACKUP"
 echo "codex config: [mcp_servers.$NAME] written to $CFG"
 
-LINK="$HOME/.local/bin/hostrunner"
+LINK="$HOME/.local/bin/peerbridge"
 mkdir -p "$HOME/.local/bin"
 # Never link a file onto itself: --local may name the link, the file it points
 # to, or another symlink to that file. `-ef` compares the final inodes after
@@ -148,8 +151,8 @@ for s in peer-review peer-chat; do
   echo "skill: $SKILLS/$s"
 done
 
-# 4. hostrunner config
-HR_CFG="$HOME/.config/hostrunner/config.yaml"
+# 4. peerbridge config
+HR_CFG="$HOME/.config/peerbridge/config.yaml"
 if [ ! -f "$HR_CFG" ]; then
   mkdir -p "$(dirname "$HR_CFG")"
   cp "$ROOT/examples/config.example.yaml" "$HR_CFG"

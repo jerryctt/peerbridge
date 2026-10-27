@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/exec"
+	"github.com/jerryctt/peerbridge/internal/exec"
 )
 
 // Kind is the type of background job a backend runs.

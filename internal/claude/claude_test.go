@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/agent"
+	"github.com/jerryctt/peerbridge/internal/agent"
 )
 
 func TestReviewArgsIsNotNative(t *testing.T) {

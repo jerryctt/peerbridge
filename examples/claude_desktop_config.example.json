@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "hostrunner": {
-      "command": "/usr/local/bin/hostrunner",
-      "args": ["-config", "/Users/you/.config/hostrunner/config.yaml"]
+    "peerbridge": {
+      "command": "/usr/local/bin/peerbridge",
+      "args": ["-config", "/Users/you/.config/peerbridge/config.yaml"]
     }
   }
 }

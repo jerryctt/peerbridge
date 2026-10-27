@@ -1,15 +1,15 @@
 version: 2
 
-project_name: hostrunner
+project_name: peerbridge
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: hostrunner
-    main: ./cmd/hostrunner
-    binary: hostrunner
+  - id: peerbridge
+    main: ./cmd/peerbridge
+    binary: peerbridge
     env:
       - CGO_ENABLED=0
     goos:
@@ -37,9 +37,9 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
-  - id: hostrunner
+  - id: peerbridge
     # arm needs the GOARM suffix (armv6 / armv7) or both builds would collide
-    # on the same archive name. Matches scripts/lib.sh hostrunner_platform.
+    # on the same archive name. Matches scripts/lib.sh peerbridge_platform.
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}"
     formats:
       - tar.gz

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/agent"
+	"github.com/jerryctt/peerbridge/internal/agent"
 )
 
 // Backend implements agent.Backend for claude.
@@ -31,7 +31,7 @@ func (b *Backend) ReviewArgs(scope, base, commit, _ string) ([]string, bool, err
 // readOnlyTools is the full set of built-in tools the peer may use. There is
 // deliberately no Bash: `claude` has no OS sandbox, and even "read-only" git
 // invocations can write (`git diff --output=FILE`), so the peer gets file
-// reading only. Review diffs are computed by hostrunner and embedded in the
+// reading only. Review diffs are computed by peerbridge and embedded in the
 // prompt instead (see server.runReview).
 const readOnlyTools = "Read,Grep,Glob"
 
@@ -42,7 +42,7 @@ const deniedTools = "Edit,Write,NotebookEdit,Bash"
 // ChatArgs runs one print-mode turn.
 //
 //   - --strict-mcp-config with no --mcp-config loads zero MCP servers, so the
-//     peer cannot call hostrunner recursively; unlike --bare it leaves the
+//     peer cannot call peerbridge recursively; unlike --bare it leaves the
 //     user's OAuth/subscription login intact.
 //   - --setting-sources "" loads no user/project/local settings, so inherited
 //     permission allow-rules and hooks cannot widen what the peer may do

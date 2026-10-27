@@ -1,4 +1,4 @@
-module github.com/jerryctt/hostrunner-mcp
+module github.com/jerryctt/peerbridge
 
 go 1.25.5
 

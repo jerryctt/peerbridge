@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/agent"
+	"github.com/jerryctt/peerbridge/internal/agent"
 )
 
 // keepFinished is how long a finished job's result stays retrievable.

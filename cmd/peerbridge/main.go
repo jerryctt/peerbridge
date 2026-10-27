@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/config"
-	"github.com/jerryctt/hostrunner-mcp/internal/exec"
-	internalserver "github.com/jerryctt/hostrunner-mcp/internal/server"
+	"github.com/jerryctt/peerbridge/internal/config"
+	"github.com/jerryctt/peerbridge/internal/exec"
+	internalserver "github.com/jerryctt/peerbridge/internal/server"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog"
 )
@@ -16,7 +16,7 @@ var version = "dev"
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
-	cfgFlag := flag.String("config", "", "path to config.yaml (default: ~/.config/hostrunner/config.yaml, or set HOSTRUNNER_CONFIG)")
+	cfgFlag := flag.String("config", "", "path to config.yaml (default: ~/.config/peerbridge/config.yaml, or set PEERBRIDGE_CONFIG)")
 	flag.Parse()
 
 	if *showVersion {
@@ -28,15 +28,15 @@ func main() {
 
 	cfgPath := config.ResolvePath(*cfgFlag)
 	if cfgPath == "" {
-		log.Fatal().Msg("cannot determine config path; pass -config or set HOSTRUNNER_CONFIG")
+		log.Fatal().Msg("cannot determine config path; pass -config or set PEERBRIDGE_CONFIG")
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Fatal().Err(err).Str("path", cfgPath).Msg("load config (create it from examples/config.example.yaml, or set HOSTRUNNER_CONFIG / -config)")
+		log.Fatal().Err(err).Str("path", cfgPath).Msg("load config (create it from examples/config.example.yaml, or set PEERBRIDGE_CONFIG / -config)")
 	}
 	// Config is read once at startup: after editing it, restart Claude Desktop /
 	// the Codex app (which respawns this server). This line makes the effective values
-	// verifiable in mcp-server-hostrunner.log.
+	// verifiable in mcp-server-peerbridge.log.
 	log.Info().
 		Str("config", cfgPath).
 		Str("timeout", cfg.Timeout.String()).

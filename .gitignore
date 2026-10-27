@@ -1,7 +1,6 @@
 /dist/
-/hostrunner
+/peerbridge
 *.test
 *.out
 .DS_Store
-/.superpowers/
 /bin/cache/

@@ -93,7 +93,7 @@ func TestResolvePath(t *testing.T) {
 	})
 
 	t.Run("explicit empty + env set returns env", func(t *testing.T) {
-		t.Setenv("HOSTRUNNER_CONFIG", "/from/env.yaml")
+		t.Setenv("PEERBRIDGE_CONFIG", "/from/env.yaml")
 		got := ResolvePath("")
 		if got != "/from/env.yaml" {
 			t.Fatalf("expected /from/env.yaml, got %q", got)
@@ -101,13 +101,13 @@ func TestResolvePath(t *testing.T) {
 	})
 
 	t.Run("explicit empty + env empty returns default path", func(t *testing.T) {
-		t.Setenv("HOSTRUNNER_CONFIG", "")
+		t.Setenv("PEERBRIDGE_CONFIG", "")
 		got := ResolvePath("")
 		home, err := os.UserHomeDir()
 		if err != nil || home == "" {
 			t.Skip("os.UserHomeDir() unavailable; skipping default path check")
 		}
-		want := filepath.Join(".config", "hostrunner", "config.yaml")
+		want := filepath.Join(".config", "peerbridge", "config.yaml")
 		if !strings.HasSuffix(got, want) {
 			t.Fatalf("expected path ending in %q, got %q", want, got)
 		}
@@ -176,13 +176,13 @@ func TestResolvePathPrefersExistingCandidate(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
 	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
-	t.Setenv("HOSTRUNNER_CONFIG", "")
+	t.Setenv("PEERBRIDGE_CONFIG", "")
 
 	paths := DefaultPaths()
 	if len(paths) < 2 {
 		t.Fatalf("want at least two candidates (~/.config and the platform config dir), got %v", paths)
 	}
-	if want := filepath.Join(home, ".config", "hostrunner", "config.yaml"); paths[0] != want {
+	if want := filepath.Join(home, ".config", "peerbridge", "config.yaml"); paths[0] != want {
 		t.Errorf("first candidate = %q, want %q", paths[0], want)
 	}
 	// Nothing exists yet: fall back to the conventional first candidate.
@@ -201,7 +201,7 @@ func TestResolvePathPrefersExistingCandidate(t *testing.T) {
 		t.Errorf("ResolvePath = %q, want existing %q", got, alt)
 	}
 	// Explicit and env still take precedence over everything.
-	t.Setenv("HOSTRUNNER_CONFIG", "/env/c.yaml")
+	t.Setenv("PEERBRIDGE_CONFIG", "/env/c.yaml")
 	if ResolvePath("") != "/env/c.yaml" || ResolvePath("/flag.yaml") != "/flag.yaml" {
 		t.Error("explicit/env precedence broken")
 	}
@@ -219,5 +219,48 @@ func TestStatusPollDefaultAndBounds(t *testing.T) {
 	}
 	if _, err := Load(writeTemp(t, "allowed_roots:\n  - "+root+"\nstatus_poll: 10m\n")); err == nil || !strings.Contains(err.Error(), "status_poll") {
 		t.Errorf("out-of-range status_poll should be rejected, got %v", err)
+	}
+}
+
+func TestLegacyHostrunnerLocationsStillWork(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("PEERBRIDGE_CONFIG", "")
+	t.Setenv("HOSTRUNNER_CONFIG", "")
+
+	paths := DefaultPaths()
+	if !strings.Contains(paths[0], "peerbridge") {
+		t.Errorf("new name must come first: %v", paths)
+	}
+	legacy := filepath.Join(home, ".config", "hostrunner", "config.yaml")
+	found := false
+	for _, p := range paths {
+		if p == legacy {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("legacy ~/.config/hostrunner path missing from %v", paths)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("allowed_roots: [/x]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolvePath(""); got != legacy {
+		t.Errorf("existing legacy config should be picked up, got %q", got)
+	}
+	// Legacy env var still honoured, new one wins.
+	t.Setenv("HOSTRUNNER_CONFIG", "/old/env.yaml")
+	if ResolvePath("") != "/old/env.yaml" {
+		t.Error("HOSTRUNNER_CONFIG should still be honoured")
+	}
+	t.Setenv("PEERBRIDGE_CONFIG", "/new/env.yaml")
+	if ResolvePath("") != "/new/env.yaml" {
+		t.Error("PEERBRIDGE_CONFIG must take precedence")
 	}
 }

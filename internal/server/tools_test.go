@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/exec"
+	"github.com/jerryctt/peerbridge/internal/exec"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/rs/zerolog"
 )
