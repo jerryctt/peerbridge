@@ -312,16 +312,19 @@ const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 // the repository while we only want to read it:
 //   - core.fsmonitor=false: `git status`/`diff` would otherwise spawn the
 //     configured fsmonitor hook;
-//   - core.hooksPath=/dev/null: no hook directory can be found;
+//   - core.hooksPath=<devnull>: no hook directory can be found;
 //   - the env drops the user's and system's git config (where git-lfs and
 //     other clean/smudge filters, diff.external, etc. are normally defined;
 //     the repo's own .git/config is the user's local state and still applies)
 //     and GIT_OPTIONAL_LOCKS=0 stops `git status` from refreshing the index.
-var gitSafety = []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"}
+//
+// os.DevNull is /dev/null on Unix and NUL on Windows, which git accepts for
+// all three settings.
+var gitSafety = []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.DevNull}
 
 var gitEnv = []string{
-	"GIT_CONFIG_GLOBAL=/dev/null",
-	"GIT_CONFIG_SYSTEM=/dev/null",
+	"GIT_CONFIG_GLOBAL=" + os.DevNull,
+	"GIT_CONFIG_SYSTEM=" + os.DevNull,
 	"GIT_CONFIG_NOSYSTEM=1",
 	"GIT_OPTIONAL_LOCKS=0",
 	"GIT_TERMINAL_PROMPT=0",
@@ -348,7 +351,7 @@ var filterKeyPattern = regexp.MustCompile(`^filter\.(.+)\.(clean|smudge|process|
 // The probe runs without a scope flag, under the same isolated env the later
 // commands use, so it sees exactly what they will: repo-local config, the
 // worktree config (extensions.worktreeConfig) and anything pulled in through
-// include/includeIf — while global/system are /dev/null. The overrides are
+// include/includeIf — while global/system are the null device. The overrides are
 // passed as GIT_CONFIG_COUNT/KEY/VALUE env (git >= 2.31), which has the
 // highest precedence of all config sources.
 func (s *Service) filterOverrides(ctx context.Context, dir string) ([]string, error) {

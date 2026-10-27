@@ -83,7 +83,17 @@ go install github.com/jerryctt/hostrunner-mcp/cmd/hostrunner@latest
 
 ### 方式 2：下載 release 二進位檔
 
-從 [Releases 頁面](https://github.com/jerryctt/hostrunner-mcp/releases)下載對應平台的預建檔，解壓後把 `hostrunner` 放進 `$PATH`（例如 `/usr/local/bin/hostrunner`）。
+從 [Releases 頁面](https://github.com/jerryctt/hostrunner-mcp/releases)下載對應平台的預建檔，解壓後把 `hostrunner` 放進 `$PATH`（例如 `/usr/local/bin/hostrunner`；Windows 則把 `hostrunner.exe` 放在任何地方）。
+
+每個 release 都附這些壓縮檔（靜態 binary，不需 runtime）：
+
+| OS | 架構 | 檔名 |
+|---|---|---|
+| macOS | `amd64`（Intel）、`arm64`（Apple silicon） | `hostrunner_<ver>_darwin_<arch>.tar.gz` |
+| Linux | `amd64`、`arm64`、`386`（32-bit x86）、`armv6`、`armv7`（32-bit ARM，如 Raspberry Pi） | `hostrunner_<ver>_linux_<arch>.tar.gz` |
+| Windows | `amd64`、`arm64`、`386` | `hostrunner_<ver>_windows_<arch>.zip` |
+
+下面的安裝腳本會自動選對檔案（`uname -m` / `PROCESSOR_ARCHITECTURE`）並用 release 的 `checksums.txt` 驗證。
 
 ### 方式 3：從原始碼建置
 
@@ -119,9 +129,23 @@ cp examples/config.example.yaml ~/.config/hostrunner/config.yaml
 
 **macOS/Linux：** 內附的 `scripts/launch.sh` 第一次執行時會下載對應平台的 release 二進位檔，並以 release 的 `checksums.txt` 驗證後才執行。不需手動安裝。
 
-**Windows：** launcher 不支援 Windows。請手動安裝（方式 2）並依「註冊到 Claude Desktop」一節設定 `claude_desktop_config.json`。
+**Windows：** marketplace plugin 的 launcher 是 POSIX shell 腳本，所以在 Windows 上 plugin 的 MCP server 不會自己啟動（skill 仍可用）。請改用 `scripts\install.ps1`——見下方「在 Windows 安裝」——它會直接把 `hostrunner.exe` 註冊進 `claude_desktop_config.json`。
 
 > **信任提醒：** launcher 會從 GitHub Releases 下載並執行二進位檔（經 checksum 驗證）。有疑慮請檢視 `scripts/launch.sh` 與 `scripts/lib.sh`。
+
+### 在 Windows 安裝（Codex 及／或 Claude Desktop）
+
+```powershell
+git clone https://github.com/jerryctt/hostrunner-mcp.git
+cd hostrunner-mcp
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1          # Codex + Claude Desktop
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Codex   # 或 -Claude 只裝其中一個
+# ... -Local .\hostrunner.exe 使用本機建置的 binary；-NoClaudeConfigWrite 只印出 JSON 片段不寫入
+```
+
+支援 Windows PowerShell 5.1 與 PowerShell 7。它會下載並驗證對應的 zip、把 `hostrunner.exe` 裝到 `%LOCALAPPDATA%\hostrunner\`、從範例建立 `%APPDATA%\hostrunner\config.yaml`、把 Codex 的 `[mcp_servers.hostrunner]` 區塊寫進 `%USERPROFILE%\.codex\config.toml`、skill 裝到 `%USERPROFILE%\.agents\skills\`，並把 `mcpServers.hostrunner` 合併進 `%APPDATA%\Claude\claude_desktop_config.json`（會留一份 `.bak.hostrunner`）。改好 `allowed_roots`（Windows 路徑如 `C:/Users/you/code` 皆可）後重啟 app。
+
+Windows 注意事項：`codex` 與 `claude` 通常是 npm 的 `.cmd` shim——GUI app 找不到時，把 `agents.codex.command` / `agents.claude.command` 設成 `(Get-Command claude).Source` 印出的完整路徑。timeout 時 hostrunner 會用 `taskkill /T` 殺掉 peer 的整棵程序樹。
 
 ### 安裝到 Codex（CLI、macOS app、IDE extension）
 
@@ -150,7 +174,7 @@ startup_timeout_sec = 20
 server 依下列順序決定設定檔：
 1. `-config` 旗標指定的路徑。
 2. `HOSTRUNNER_CONFIG` 環境變數。
-3. 預設 `~/.config/hostrunner/config.yaml`。
+3. 下列中第一個存在的檔案，都不存在則取第一個：`~/.config/hostrunner/config.yaml`（所有平台），其次是 OS 的使用者設定目錄——Windows 的 `%APPDATA%\hostrunner\config.yaml`、macOS 的 `~/Library/Application Support/hostrunner/config.yaml`。
 
 **建議**放在 `~/.config/hostrunner/config.yaml`。GUI app 不繼承 shell 環境變數，shell profile 裡的 `HOSTRUNNER_CONFIG` 對 Claude Desktop 或 Codex app 啟動的 server 看不到。
 

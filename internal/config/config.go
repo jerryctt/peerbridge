@@ -13,9 +13,10 @@ import (
 // ResolvePath decides which config file to load, in priority order:
 //  1. an explicit path (e.g. from the -config flag), if non-empty
 //  2. the HOSTRUNNER_CONFIG environment variable, if set
-//  3. the default ~/.config/hostrunner/config.yaml
+//  3. the first existing file among DefaultPaths(); if none exists, the
+//     first candidate (so the error message names the conventional place).
 //
-// Returns "" only if no explicit path / env is given and the home dir is unknown.
+// Returns "" only if no explicit path / env is given and no home dir is known.
 func ResolvePath(explicit string) string {
 	if explicit != "" {
 		return explicit
@@ -23,11 +24,42 @@ func ResolvePath(explicit string) string {
 	if env := os.Getenv("HOSTRUNNER_CONFIG"); env != "" {
 		return env
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	paths := DefaultPaths()
+	if len(paths) == 0 {
 		return ""
 	}
-	return filepath.Join(home, ".config", "hostrunner", "config.yaml")
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return paths[0]
+}
+
+// DefaultPaths lists the conventional config locations for this OS:
+// ~/.config/hostrunner/config.yaml everywhere (the documented default), plus
+// the platform's user config dir when it differs — %APPDATA%\hostrunner on
+// Windows, ~/Library/Application Support/hostrunner on macOS.
+func DefaultPaths() []string {
+	var paths []string
+	seen := map[string]bool{}
+	add := func(dir string) {
+		if dir == "" {
+			return
+		}
+		p := filepath.Join(dir, "hostrunner", "config.yaml")
+		if !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		add(filepath.Join(home, ".config"))
+	}
+	if dir, err := os.UserConfigDir(); err == nil {
+		add(dir)
+	}
+	return paths
 }
 
 type Config struct {

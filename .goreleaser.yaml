@@ -19,12 +19,28 @@ builds:
     goarch:
       - amd64
       - arm64
+      - "386"
+      - arm
+    goarm:
+      - "6"
+      - "7"
+    ignore:
+      # Apple never shipped 32-bit targets Go supports; Windows on 32-bit ARM
+      # is effectively gone. Keep windows/386 for old x86 machines.
+      - goos: darwin
+        goarch: "386"
+      - goos: darwin
+        goarch: arm
+      - goos: windows
+        goarch: arm
     ldflags:
       - -s -w -X main.version={{.Version}}
 
 archives:
   - id: hostrunner
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # arm needs the GOARM suffix (armv6 / armv7) or both builds would collide
+    # on the same archive name. Matches scripts/lib.sh hostrunner_platform.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}"
     formats:
       - tar.gz
     format_overrides:
@@ -36,6 +52,8 @@ archives:
       - README.md
       - examples/config.example.yaml
       - examples/claude_desktop_config.example.json
+      - scripts/install.ps1
+      - skills/**/*
 
 checksum:
   name_template: "checksums.txt"

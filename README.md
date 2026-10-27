@@ -83,7 +83,17 @@ The binary is placed in `$GOPATH/bin/hostrunner` (typically `~/go/bin/hostrunner
 
 ### Option 2: Download a release binary
 
-Download the pre-built binary for your platform from the [Releases page](https://github.com/jerryctt/hostrunner-mcp/releases), extract it, and place `hostrunner` somewhere in your `$PATH` (e.g. `/usr/local/bin/hostrunner`).
+Download the pre-built binary for your platform from the [Releases page](https://github.com/jerryctt/hostrunner-mcp/releases), extract it, and place `hostrunner` somewhere in your `$PATH` (e.g. `/usr/local/bin/hostrunner`; on Windows, `hostrunner.exe` anywhere you like).
+
+Every release ships these archives (static binaries, no runtime needed):
+
+| OS | Architectures | Archive |
+|---|---|---|
+| macOS | `amd64` (Intel), `arm64` (Apple silicon) | `hostrunner_<ver>_darwin_<arch>.tar.gz` |
+| Linux | `amd64`, `arm64`, `386` (32-bit x86), `armv6`, `armv7` (32-bit ARM, e.g. Raspberry Pi) | `hostrunner_<ver>_linux_<arch>.tar.gz` |
+| Windows | `amd64`, `arm64`, `386` | `hostrunner_<ver>_windows_<arch>.zip` |
+
+The installers below pick the right one automatically (`uname -m` / `PROCESSOR_ARCHITECTURE`) and verify it against the release `checksums.txt`.
 
 ### Option 3: Build from source
 
@@ -119,9 +129,23 @@ You can override the config path with the `-config` flag or the `HOSTRUNNER_CONF
 
 **macOS/Linux:** the bundled `scripts/launch.sh` launcher downloads the matching release binary on first run and verifies it against the release `checksums.txt` before executing it. No manual binary install needed.
 
-**Windows:** the launcher is not supported on Windows. Install the binary manually (Option 2 above) and register it via `claude_desktop_config.json` as described in the "Register with Claude Desktop" section.
+**Windows:** the marketplace plugin's launcher is a POSIX shell script, so on Windows the plugin's MCP server will not start by itself (its skills still work). Use `scripts\install.ps1` instead — see "Install on Windows" below — which registers `hostrunner.exe` directly in `claude_desktop_config.json`.
 
 > **Trust note:** the launcher downloads and runs a binary from GitHub Releases, checksum-verified against the release. Review the source at `scripts/launch.sh` and `scripts/lib.sh` if you have concerns.
+
+### Install on Windows (Codex and/or Claude Desktop)
+
+```powershell
+git clone https://github.com/jerryctt/hostrunner-mcp.git
+cd hostrunner-mcp
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1          # Codex + Claude Desktop
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Codex   # or -Claude for one of them
+# ... -Local .\hostrunner.exe to use a locally built binary; -NoClaudeConfigWrite to only print the JSON snippet
+```
+
+Works with Windows PowerShell 5.1 and PowerShell 7. It downloads and checksum-verifies the matching zip, installs `hostrunner.exe` to `%LOCALAPPDATA%\hostrunner\`, creates `%APPDATA%\hostrunner\config.yaml` from the example, writes the Codex `[mcp_servers.hostrunner]` block to `%USERPROFILE%\.codex\config.toml` and the skills to `%USERPROFILE%\.agents\skills\`, and merges `mcpServers.hostrunner` into `%APPDATA%\Claude\claude_desktop_config.json` (a `.bak.hostrunner` copy is kept). Edit `allowed_roots` (Windows paths such as `C:/Users/you/code` are fine), then restart the apps.
+
+Windows notes: `codex` and `claude` are usually `.cmd` shims from npm — if the GUI app cannot find them, set `agents.codex.command` / `agents.claude.command` to the full path printed by `(Get-Command claude).Source`. On a timeout hostrunner kills the whole peer process tree with `taskkill /T`.
 
 ### Install for Codex (CLI, macOS app, IDE extension)
 
@@ -150,7 +174,7 @@ startup_timeout_sec = 20
 The server resolves its config file in this order:
 1. The path given by the `-config` flag, if provided.
 2. The `HOSTRUNNER_CONFIG` environment variable, if set.
-3. The default `~/.config/hostrunner/config.yaml`.
+3. The first of these that exists, otherwise the first one: `~/.config/hostrunner/config.yaml` (all platforms), then the OS user config dir — `%APPDATA%\hostrunner\config.yaml` on Windows, `~/Library/Application Support/hostrunner/config.yaml` on macOS.
 
 **Recommended:** place your config at `~/.config/hostrunner/config.yaml`. GUI apps do not inherit shell environment variables, so `HOSTRUNNER_CONFIG` set in your shell profile will not be visible to a server launched from Claude Desktop or the Codex app.
 

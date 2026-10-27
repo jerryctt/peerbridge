@@ -2,7 +2,7 @@
 # hostrunner plugin launcher (macOS/Linux) for Claude Desktop / Claude Code.
 # Downloads the prebuilt binary matching this host on first run (verified
 # against the release checksums.txt), caches it, then execs it. Windows is not
-# supported by this launcher — install the binary manually (see README).
+# supported by this launcher — use scripts/install.ps1 there (see README).
 set -eu
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"

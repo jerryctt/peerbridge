@@ -13,8 +13,14 @@ hostrunner_platform() {
   case "$arch" in
     x86_64|amd64) arch=amd64 ;;
     arm64|aarch64) arch=arm64 ;;
+    i386|i486|i586|i686|x86) arch=386 ;;
+    armv7*|armv8l) arch=armv7 ;;   # 32-bit userland on ARMv7/ARMv8 (Raspberry Pi OS 32-bit)
+    armv6*) arch=armv6 ;;
     *) echo "hostrunner: unsupported arch '$arch'" >&2; return 1 ;;
   esac
+  if [ "$os" = darwin ] && [ "$arch" != amd64 ] && [ "$arch" != arm64 ]; then
+    echo "hostrunner: no macOS build for '$arch'" >&2; return 1
+  fi
   echo "$os $arch"
 }
 

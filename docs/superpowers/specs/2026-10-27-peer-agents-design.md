@@ -40,7 +40,7 @@ is to make hostrunner **symmetric and host-agnostic**:
 - No write access for peers (no `allow_write` config).
 - No third backend (gemini etc.) in this change — but adding one must be a
   single new package plus one registry line.
-- No Windows support for the installer scripts (binary still builds).
+- ~~No Windows support for the installer scripts~~ — superseded by §11.
 
 ## 2. Constraints & Key Decisions
 
@@ -271,3 +271,33 @@ Manual E2E (documented in README "Verify" section):
 
 - Bump to `0.3.0` (plugin.json, server version string, README).
 - goreleaser unchanged; installer downloads tag `v0.3.0`.
+
+## 11. Cross-platform (added 2026-10-27, after the peer-agents merge)
+
+Targets: the release builds `darwin/{amd64,arm64}`, `linux/{amd64,arm64,386,armv6,armv7}`,
+`windows/{amd64,arm64,386}`; `darwin/386`, `darwin/arm` and `windows/arm` are
+ignored. The archive template appends the GOARM suffix (`armv6`/`armv7`) so the
+two 32-bit ARM builds do not collide; `scripts/lib.sh` maps `uname -m` values
+(`i686`→`386`, `armv6l`→`armv6`, `armv7l`/`armv8l`→`armv7`) and refuses
+non-amd64/arm64 on macOS. CI cross-compiles every target and runs `go test` on
+`windows-latest`.
+
+Windows runtime: the child gets `CREATE_NEW_PROCESS_GROUP` and a timeout runs
+`taskkill /T /F /PID` so codex/claude helper processes are not orphaned (plain
+`Process.Kill` is the fallback). Git isolation uses `os.DevNull` (`NUL` on
+Windows) for `core.hooksPath`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`.
+`config.ResolvePath` now tries `~/.config/hostrunner/config.yaml` and then
+`os.UserConfigDir()/hostrunner/config.yaml` (`%APPDATA%` on Windows,
+`~/Library/Application Support` on macOS), using the first that exists.
+
+Windows installation: `scripts/install.ps1` (Windows PowerShell 5.1 and 7)
+downloads and SHA-256-verifies the zip, installs `hostrunner.exe` to
+`%LOCALAPPDATA%\hostrunner`, seeds `%APPDATA%\hostrunner\config.yaml`, writes
+the same marker-delimited `[mcp_servers.<name>]` block (with the same conflict
+detection and `codex mcp list` validation) to `%USERPROFILE%\.codex\config.toml`,
+copies `peer-review`/`peer-chat` to `%USERPROFILE%\.agents\skills`, and merges
+`mcpServers.<name>` into `%APPDATA%\Claude\claude_desktop_config.json` with a
+backup (or prints the snippet with `-NoClaudeConfigWrite`). The Claude
+marketplace plugin keeps its sh launcher: on Windows the plugin's MCP server
+does not start by itself and users register the exe through `install.ps1`.
+Tested under pwsh 7 on Linux against the same fixtures as `install-codex.sh`.

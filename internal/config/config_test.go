@@ -165,3 +165,38 @@ func TestAgentsLegacyDoesNotDuplicate(t *testing.T) {
 		t.Errorf("merge order = %q, want agents first then legacy", got)
 	}
 }
+
+func TestResolvePathPrefersExistingCandidate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("HOSTRUNNER_CONFIG", "")
+
+	paths := DefaultPaths()
+	if len(paths) < 2 {
+		t.Fatalf("want at least two candidates (~/.config and the platform config dir), got %v", paths)
+	}
+	if want := filepath.Join(home, ".config", "hostrunner", "config.yaml"); paths[0] != want {
+		t.Errorf("first candidate = %q, want %q", paths[0], want)
+	}
+	// Nothing exists yet: fall back to the conventional first candidate.
+	if got := ResolvePath(""); got != paths[0] {
+		t.Errorf("ResolvePath with nothing present = %q, want %q", got, paths[0])
+	}
+	// Only the platform config dir has a file: it wins.
+	alt := paths[1]
+	if err := os.MkdirAll(filepath.Dir(alt), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(alt, []byte("allowed_roots: [/x]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolvePath(""); got != alt {
+		t.Errorf("ResolvePath = %q, want existing %q", got, alt)
+	}
+	// Explicit and env still take precedence over everything.
+	t.Setenv("HOSTRUNNER_CONFIG", "/env/c.yaml")
+	if ResolvePath("") != "/env/c.yaml" || ResolvePath("/flag.yaml") != "/flag.yaml" {
+		t.Error("explicit/env precedence broken")
+	}
+}
