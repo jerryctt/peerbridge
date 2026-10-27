@@ -72,6 +72,14 @@ PARENT="$Q"'mcp_servers'"$Q"
 HDR="^[[:space:]]*\[[[:space:]]*$PARENT[[:space:]]*\.[[:space:]]*$Q$NAME$Q[[:space:]]*(\.[^]]*)?\][[:space:]]*(#.*)?$"
 DOTTED="^[[:space:]]*$PARENT[[:space:]]*\.[[:space:]]*$Q$NAME$Q[[:space:]]*[.=]"
 conflict=0
+# `mcp_servers = { ... }` is an inline table; TOML forbids adding to it later,
+# so appending [mcp_servers.NAME] would invalidate the whole file.
+if grep -Eq "^[[:space:]]*$PARENT[[:space:]]*=" "$tmp"; then
+  rm -f "$tmp"
+  echo "error: $CFG defines mcp_servers as an inline table (mcp_servers = { ... }); a new sub-table cannot be appended to it." >&2
+  echo "       Convert it to [mcp_servers.<name>] tables (or add hostrunner inside the inline table by hand) and re-run. Nothing was changed." >&2
+  exit 1
+fi
 if grep -Eq "$HDR" "$tmp" || grep -Eq "$DOTTED" "$tmp"; then
   conflict=1
 elif grep -Eq "^[[:space:]]*\[[[:space:]]*$PARENT[[:space:]]*\][[:space:]]*(#.*)?$" "$tmp" \
