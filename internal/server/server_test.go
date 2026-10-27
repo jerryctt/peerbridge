@@ -147,7 +147,7 @@ func gitCalls(t *testing.T, reqs []exec.Request) []string {
 			t.Errorf("git call missing safety prefix: %v", q.Args)
 			continue
 		}
-		if strings.Join(q.Env, " ") != strings.Join(gitEnv, " ") {
+		if !strings.HasPrefix(strings.Join(q.Env, " "), strings.Join(gitEnv, " ")) {
 			t.Errorf("git call missing isolation env: %v", q.Env)
 		}
 		calls = append(calls, strings.Join(q.Args[len(gitSafety):], " "))
@@ -218,6 +218,50 @@ func TestReviewStartCodexFailureIncludesStderr(t *testing.T) {
 	}
 }
 
+// filterProbe is the git call that discovers repo-local filter drivers.
+const filterProbe = `config --local --name-only --get-regexp ^filter\.`
+
+func TestReviewDisablesRepoLocalFilters(t *testing.T) {
+	r := &scriptedRunner{replies: map[string]exec.Result{
+		gitKey(filterProbe): {Stdout: "filter.lfs.clean\nfilter.lfs.smudge\nfilter.lfs.required\nfilter.my.sub.process\n"},
+	}, fallback: exec.Result{Stdout: claudeJSON}}
+	s, repo := newSvc(t, r)
+	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "")
+	if got, isErr := waitStatus(t, s, jobID(t, out)); isErr {
+		t.Fatalf("status: %q", got)
+	}
+	var diffEnv string
+	for _, q := range r.all() {
+		if q.Command == "git" && strings.Contains(strings.Join(q.Args, " "), "diff --no-ext-diff") {
+			diffEnv = strings.Join(q.Env, "\n")
+		}
+	}
+	for _, want := range []string{
+		"GIT_CONFIG_COUNT=8",
+		"GIT_CONFIG_KEY_0=filter.lfs.clean\nGIT_CONFIG_VALUE_0=\n",
+		"GIT_CONFIG_KEY_2=filter.lfs.process\nGIT_CONFIG_VALUE_2=\n",
+		"GIT_CONFIG_KEY_3=filter.lfs.required\nGIT_CONFIG_VALUE_3=false",
+		"GIT_CONFIG_KEY_4=filter.my.sub.clean\n",
+	} {
+		if !strings.Contains(diffEnv+"\n", want) {
+			t.Errorf("diff env missing %q:\n%s", want, diffEnv)
+		}
+	}
+	// The probe itself must not carry overrides, and "no filters" (exit 1)
+	// must add none.
+	r2 := &scriptedRunner{replies: map[string]exec.Result{gitKey(filterProbe): {ExitCode: 1}}, fallback: exec.Result{Stdout: claudeJSON}}
+	s2, repo2 := newSvc(t, r2)
+	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "uncommitted", "", "", "")
+	if got, isErr := waitStatus(t, s2, jobID(t, out)); isErr {
+		t.Fatalf("status: %q", got)
+	}
+	for _, q := range r2.all() {
+		if q.Command == "git" && strings.Contains(strings.Join(q.Env, " "), "GIT_CONFIG_COUNT") {
+			t.Errorf("no filters configured, yet overrides present: %v", q.Env)
+		}
+	}
+}
+
 const mergeBaseSHA = "0123456789abcdef0123456789abcdef01234567"
 
 func TestReviewStartClaudeViaPrompt(t *testing.T) {
@@ -256,7 +300,7 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 	// claude peer has no shell; "--" ends option parsing after the ref.
 	// base scope diffs the WORKTREE against the merge-base (not base...HEAD),
 	// so uncommitted fixes from the edit→review loop are reviewed too.
-	want := "merge-base main HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv " + mergeBaseSHA + " --"
+	want := filterProbe + ";merge-base main HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv " + mergeBaseSHA + " --"
 	if calls := gitCalls(t, r.all()); strings.Join(calls, ";") != want {
 		t.Errorf("git calls = %v", calls)
 	}
@@ -305,7 +349,7 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 		t.Errorf("stdin should carry status, staged and unstaged diffs: %q", in)
 	}
 	gitCalls := gitCalls(t, r.all())
-	if want := "rev-parse --verify --quiet HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv --cached HEAD --;diff --no-ext-diff --no-textconv --"; strings.Join(gitCalls, ";") != want {
+	if want := filterProbe + ";rev-parse --verify --quiet HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv --cached HEAD --;diff --no-ext-diff --no-textconv --"; strings.Join(gitCalls, ";") != want {
 		t.Errorf("git calls = %v", gitCalls)
 	}
 

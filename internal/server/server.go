@@ -328,12 +328,60 @@ var gitEnv = []string{
 }
 
 // git runs one read-only git command in dir with the configured caps.
-func (s *Service) git(ctx context.Context, dir string, args ...string) (exec.Result, error) {
+// extraEnv (e.g. from filterOverrides) is appended after gitEnv.
+func (s *Service) git(ctx context.Context, dir string, extraEnv []string, args ...string) (exec.Result, error) {
 	full := append(append([]string{}, gitSafety...), args...)
+	env := append(append([]string{}, gitEnv...), extraEnv...)
 	return s.Runner.Run(ctx, exec.Request{
-		Command: "git", Args: full, Dir: dir, Env: gitEnv,
+		Command: "git", Args: full, Dir: dir, Env: env,
 		Timeout: s.Cfg.Timeout, MaxOutputBytes: s.Cfg.MaxOutputBytes, StreamTo: s.streamTo(),
 	})
+}
+
+var filterKeyPattern = regexp.MustCompile(`^filter\.(.+)\.(clean|smudge|process|required)$`)
+
+// filterOverrides neutralises clean/smudge/process filter drivers defined in
+// the repository's own .git/config (global/system config is already ignored
+// via gitEnv). Worktree diffs run clean filters to normalise file contents,
+// and a filter is an arbitrary program; .gitattributes can only *select* a
+// driver, so emptying every configured driver is sufficient. The overrides
+// are passed as GIT_CONFIG_COUNT/KEY/VALUE env (git >= 2.31), which wins over
+// every config file.
+func (s *Service) filterOverrides(ctx context.Context, dir string) ([]string, error) {
+	res, err := s.git(ctx, dir, nil, "config", "--local", "--name-only", "--get-regexp", `^filter\.`)
+	if err != nil {
+		return nil, fmt.Errorf("git config: %w", err)
+	}
+	// exit 1 = no matching keys; anything else is a real failure.
+	if res.ExitCode != 0 && res.ExitCode != 1 {
+		return nil, fmt.Errorf("git config --get-regexp failed (exit %d): %s", res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
+	seen := map[string]bool{}
+	var drivers []string
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		m := filterKeyPattern.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil || seen[m[1]] {
+			continue
+		}
+		seen[m[1]] = true
+		drivers = append(drivers, m[1])
+	}
+	if len(drivers) == 0 {
+		return nil, nil
+	}
+	var env []string
+	n := 0
+	add := func(k, v string) {
+		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", n, k), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", n, v))
+		n++
+	}
+	for _, d := range drivers {
+		add("filter."+d+".clean", "")
+		add("filter."+d+".smudge", "")
+		add("filter."+d+".process", "")
+		add("filter."+d+".required", "false")
+	}
+	return append([]string{fmt.Sprintf("GIT_CONFIG_COUNT=%d", n)}, env...), nil
 }
 
 // gitArgs returns the read-only git invocations whose output describes the
@@ -382,17 +430,21 @@ var shaPattern = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
 // truncated reports whether any command's output hit the cap, so the caller
 // can tell the user the review saw an incomplete diff.
 func (s *Service) changeContext(ctx context.Context, dir, scope, base, commit string) (text string, truncated bool, err error) {
+	fenv, err := s.filterOverrides(ctx, dir)
+	if err != nil {
+		return "", false, err
+	}
 	headUnborn := false
 	mergeBase := ""
 	switch scope {
 	case "", "uncommitted":
-		res, err := s.git(ctx, dir, "rev-parse", "--verify", "--quiet", "HEAD")
+		res, err := s.git(ctx, dir, fenv, "rev-parse", "--verify", "--quiet", "HEAD")
 		if err != nil {
 			return "", false, fmt.Errorf("git rev-parse: %w", err)
 		}
 		headUnborn = res.ExitCode != 0
 	case "base":
-		res, err := s.git(ctx, dir, "merge-base", base, "HEAD")
+		res, err := s.git(ctx, dir, fenv, "merge-base", base, "HEAD")
 		if err != nil {
 			return "", false, fmt.Errorf("git merge-base: %w", err)
 		}
@@ -406,7 +458,7 @@ func (s *Service) changeContext(ctx context.Context, dir, scope, base, commit st
 	}
 	var out strings.Builder
 	for _, args := range gitArgs(scope, base, commit, headUnborn, mergeBase) {
-		res, err := s.git(ctx, dir, args...)
+		res, err := s.git(ctx, dir, fenv, args...)
 		if err != nil {
 			return "", false, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 		}
