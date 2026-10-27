@@ -115,7 +115,7 @@ make build          # produces ./peerbridge
 ```
 Then install the `peerbridge` plugin from the listing.
 
-Installing via the marketplace installs the MCP server (auto-started by the bundled launcher) and the `peer-review`, `peer-chat` and `codex-loop` skills in one step.
+Installing via the marketplace installs the MCP server (auto-started by the bundled launcher) and the `peer-review` and `peer-chat` skills in one step.
 
 **Prerequisite — create a config file:** the server looks for its config at `~/.config/peerbridge/config.yaml` by default. Create it from `examples/config.example.yaml` before starting Claude Desktop/Code:
 
@@ -370,11 +370,12 @@ Every host asks before running an MCP tool unless you tell it not to. A review i
 
 ## Skills
 
-The repository ships three skills under `skills/`, in the shared `SKILL.md` format that both Claude (plugin) and Codex (`~/.agents/skills/`) read:
+The repository ships two skills under `skills/`, in the shared `SKILL.md` format that both Claude (plugin) and Codex (`~/.agents/skills/`) read:
 
-- **`peer-review`** — edit → peer review → edit loop with `review_start` / `job_status`; agent-neutral (works from either host).
+- **`peer-review`** — edit → peer review → edit loop with `review_start` / `job_status`; agent-neutral (works from either host, reviewing with codex or claude).
 - **`peer-chat`** — multi-round discussion with `chat_start` / `job_status`, keeping the `session_id`.
-- **`codex-loop`** — the original Claude-side loop, now using `review_start(agent="codex")`.
+
+The former Claude-only `codex-loop` skill has been removed: `peer-review` covers it (say "review my changes with codex" to pin the peer to codex).
 
 The Claude marketplace plugin and `scripts/install-codex.sh` install them automatically. Trigger them by saying things like "peer review my changes", "ask claude/codex what it thinks about this", or "review my changes with codex".
 

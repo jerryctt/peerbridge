@@ -5,7 +5,10 @@ description: >
   you are Codex) for a read-only code review of the current changes via the
   peerbridge MCP tools, then fix what it finds and re-review until clean. Use
   when the user says "peer review", "get a second opinion on my changes",
-  "have codex/claude review this", "review loop", or "cross-review".
+  "have codex/claude review this", "review my changes with codex/claude",
+  "run codex/claude on my edits", "check my code with codex/claude", "do a
+  codex/claude review", "start an edit-review loop", "review loop", or
+  "cross-review".
 ---
 
 # peer-review
@@ -83,7 +86,11 @@ it lists problems).
 A non-zero `(<agent> exit N)` with a `--- <agent> stderr ---` section means the
 peer CLI itself failed (not installed, not logged in, bad flag): report it as a
 tool error. A `[<agent> was killed after the server-side timeout ...]` marker
-means the server's `timeout` config is too low for this repo.
+means the server's `timeout` config is too low for this repo: suggest raising
+it, then restarting the host app (Claude Desktop / Codex) so the server reloads
+its config. The result holds only the verdict; the peer's live progress trace
+is in the host's MCP log (on Claude Desktop for macOS:
+`~/Library/Logs/Claude/mcp-server-peerbridge.log`, while `stream_output` is on).
 
 ### 5. Re-review
 

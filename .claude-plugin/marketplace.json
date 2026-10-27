@@ -1,13 +1,20 @@
 {
   "name": "peerbridge-marketplace",
   "owner": {
-    "name": "Jerry Chan"
+    "name": "Jerry Chan",
+    "email": "jerrycttdev@gmail.com"
   },
   "plugins": [
     {
       "name": "peerbridge",
       "source": "./",
-      "description": "Local MCP server + plugin for Claude and Codex: let either agent ask the other for a read-only code review or a multi-turn discussion on your machine, bridging sandboxes to your host codex / claude CLIs."
+      "description": "Local MCP server + plugin for Claude and Codex: let either agent ask the other for a read-only code review or a multi-turn discussion on your machine, bridging sandboxes to your host codex / claude CLIs.",
+      "author": {
+        "name": "Jerry Chan",
+        "email": "jerrycttdev@gmail.com"
+      },
+      "homepage": "https://github.com/jerryctt/peerbridge",
+      "license": "MIT"
     }
   ]
 }

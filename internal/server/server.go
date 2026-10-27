@@ -21,7 +21,7 @@ import (
 
 // version is reported in the MCP initialize handshake. Keep in sync with
 // .claude-plugin/plugin.json.
-const version = "0.3.2"
+const version = "0.4.0"
 
 // New builds the MCP server. The returned shutdown func cancels any
 // still-running background jobs (killing their CLI process groups) and

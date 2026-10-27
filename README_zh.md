@@ -115,7 +115,7 @@ make build          # 產生 ./peerbridge
 ```
 然後從清單安裝 `peerbridge` plugin。
 
-透過 marketplace 安裝會一次裝好 MCP server（由內附 launcher 自動啟動）以及 `peer-review`、`peer-chat`、`codex-loop` 三個 skill。
+透過 marketplace 安裝會一次裝好 MCP server（由內附 launcher 自動啟動）以及 `peer-review`、`peer-chat` 兩個 skill。
 
 **前置：建立設定檔。** server 預設讀 `~/.config/peerbridge/config.yaml`。啟動 Claude Desktop/Code 前先從 `examples/config.example.yaml` 建立：
 
@@ -365,11 +365,12 @@ chat_start(folder="/Users/you/proj", session_id="abc…", message="Point 2 only 
 
 ## Skills
 
-`skills/` 下附三個 skill，採用 Claude（plugin）與 Codex（`~/.agents/skills/`）共用的 `SKILL.md` 格式：
+`skills/` 下附兩個 skill，採用 Claude（plugin）與 Codex（`~/.agents/skills/`）共用的 `SKILL.md` 格式：
 
-- **`peer-review`** — 以 `review_start` / `job_status` 跑「編輯 → peer review → 編輯」循環；agent 中立，兩邊都能用。
+- **`peer-review`** — 以 `review_start` / `job_status` 跑「編輯 → peer review → 編輯」循環；agent 中立，兩邊都能用，可由 codex 或 claude 來 review。
 - **`peer-chat`** — 以 `chat_start` / `job_status` 進行多輪討論，保留 `session_id`。
-- **`codex-loop`** — 原本 Claude 端的循環，現在改用 `review_start(agent="codex")`。
+
+原本只給 Claude 用的 `codex-loop` skill 已移除，由 `peer-review` 取代（說「review my changes with codex」即可指定由 codex review）。
 
 Claude marketplace plugin 與 `scripts/install-codex.sh` 會自動安裝它們。用類似「peer review my changes」、「ask claude/codex what it thinks about this」、「review my changes with codex」的話即可觸發。
 
