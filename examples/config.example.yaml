@@ -11,6 +11,12 @@ allowed_commands:
 # "config loaded" (Claude: ~/Library/Logs/Claude/mcp-server-hostrunner.log).
 timeout: 600s
 max_output_bytes: 200000
+# How long job_status waits for a job before answering "running". Longer =
+# fewer polls = fewer permission prompts in the GUI. Must stay below the MCP
+# client's per-call timeout: Codex tool_timeout_sec (120 when written by our
+# installers, 60 by default), Claude Desktop ~180s. 100s is safe with both
+# installers; the built-in default is 50s.
+status_poll: 100s
 stream_output: false   # tee peer CLI output to the server log
 
 # Peer agents. Both are optional; defaults shown. macOS GUI apps do not

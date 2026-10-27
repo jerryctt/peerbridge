@@ -206,3 +206,18 @@ func TestResolvePathPrefersExistingCandidate(t *testing.T) {
 		t.Error("explicit/env precedence broken")
 	}
 }
+
+func TestStatusPollDefaultAndBounds(t *testing.T) {
+	root := t.TempDir()
+	c, err := Load(writeTemp(t, "allowed_roots:\n  - "+root+"\n"))
+	if err != nil || c.StatusPoll != 50*time.Second {
+		t.Fatalf("default status_poll = %v err=%v, want 50s", c.StatusPoll, err)
+	}
+	c, err = Load(writeTemp(t, "allowed_roots:\n  - "+root+"\nstatus_poll: 100s\n"))
+	if err != nil || c.StatusPoll != 100*time.Second {
+		t.Errorf("status_poll = %v err=%v, want 100s", c.StatusPoll, err)
+	}
+	if _, err := Load(writeTemp(t, "allowed_roots:\n  - "+root+"\nstatus_poll: 10m\n")); err == nil || !strings.Contains(err.Error(), "status_poll") {
+		t.Errorf("out-of-range status_poll should be rejected, got %v", err)
+	}
+}

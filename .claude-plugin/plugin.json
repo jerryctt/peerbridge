@@ -1,6 +1,6 @@
 {
   "name": "hostrunner",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Local MCP server + plugin for Claude and Codex: let either agent ask the other for a read-only code review or a multi-turn discussion on your machine, bridging sandboxes to your host codex / claude CLIs.",
   "author": {
     "name": "Jerry Chan",

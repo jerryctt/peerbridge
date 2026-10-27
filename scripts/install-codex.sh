@@ -101,9 +101,14 @@ $BEGIN
 [mcp_servers.$NAME]
 command = "$BIN"
 args = []
-# review/chat jobs are polled via job_status (each call blocks <= 50s)
+# review/chat jobs are polled via job_status; keep hostrunner's status_poll
+# (config.yaml) below this tool timeout.
 tool_timeout_sec = 120
 startup_timeout_sec = 20
+# Approval prompts: "writes" asks only for tools NOT marked read-only. The
+# peer tools (review_start, chat_start, job_status) are read-only, so only
+# run_command prompts. Use "approve" to never ask, "prompt" to always ask.
+default_tools_approval_mode = "writes"
 $END
 EOF
 # Validate with codex itself when available; restore the original on failure.

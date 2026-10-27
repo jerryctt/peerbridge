@@ -207,6 +207,11 @@ timeout: 600s
 # Maximum bytes returned from a single tool invocation (output is truncated with a notice).
 max_output_bytes: 200000
 
+# How long job_status waits before answering "running". Longer = fewer polls =
+# fewer permission prompts. Must stay below the client's per-call timeout
+# (Codex tool_timeout_sec: 120 via our installers; Claude Desktop ~180s).
+status_poll: 100s
+
 # Tee peer CLI output to the server's stderr in real time (default: true).
 # Claude Desktop captures this in ~/Library/Logs/Claude/mcp-server-hostrunner.log.
 stream_output: true
@@ -352,6 +357,14 @@ Run an allowlisted command (argv, no shell) in a host folder.
 **Returns:** exit code, elapsed time, stdout, and stderr.
 
 ---
+
+## Permission prompts
+
+Every host asks before running an MCP tool unless you tell it not to. A review is one `review_start` plus several `job_status` polls, so with the defaults you get a prompt every ~50 seconds. Three knobs:
+
+- **Fewer polls.** `status_poll` in `config.yaml` is how long `job_status` waits before answering "running". The example sets `100s` (safe with the `tool_timeout_sec = 120` our installers write and with Claude Desktop's ~180s); the built-in default is `50s`. It must stay below the client's per-call timeout.
+- **Codex.** The installers write `default_tools_approval_mode = "writes"` into the `[mcp_servers.hostrunner]` block: Codex then only asks for tools that are *not* marked read-only. `review_start`, `chat_start` and `job_status` carry the MCP `readOnlyHint` annotation (peers never modify anything), so they run without prompts; `run_command` still asks. Set it to `"approve"` to never ask, or override one tool with `[mcp_servers.hostrunner.tools.run_command] approval_mode = "approve"`.
+- **Claude.** In Claude Desktop / Cowork pick **Always allow** on the first prompt for each tool (it is remembered per tool). In Claude Code add a permission rule to `~/.claude/settings.json`: `{"permissions": {"allow": ["mcp__hostrunner__*"]}}` — for the marketplace plugin the server is named `plugin_hostrunner_hostrunner`, so use `"mcp__plugin_hostrunner_hostrunner__*"`. Claude Code does not yet act on `readOnlyHint` for MCP tools, hence the explicit rule.
 
 ## Skills
 

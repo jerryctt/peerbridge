@@ -23,18 +23,16 @@ import (
 // .claude-plugin/plugin.json.
 const version = "0.3.0"
 
-// statusLongPoll is how long job_status blocks waiting for the job to finish
-// before reporting "running". It must stay well under the MCP client's
-// per-call timeout (Claude Desktop kills tool calls at ~180s; the Codex
-// installer sets tool_timeout_sec = 120).
-const statusLongPoll = 50 * time.Second
-
 // New builds the MCP server. The returned shutdown func cancels any
 // still-running background jobs (killing their CLI process groups) and
 // should be called after the server stops serving.
 func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCPServer, func()) {
 	s := mcpserver.NewMCPServer("hostrunner", version, mcpserver.WithRecovery())
 	svc := NewService(cfg, r, log)
+	statusPoll := cfg.StatusPoll
+	if statusPoll <= 0 {
+		statusPoll = 50 * time.Second // config.Load sets this; guard direct construction
+	}
 	agents := strings.Join(svc.Backends.Names(), " | ")
 
 	text := func(out string, isErr bool) (*mcp.CallToolResult, error) {
@@ -78,22 +76,36 @@ func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCP
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return text(svc.JobStatus(ctx, id, statusLongPoll))
+		return text(svc.JobStatus(ctx, id, statusPoll))
+	}
+
+	// Annotations: the peer tools never modify the host (peers are read-only
+	// and the server only reads the repo), so they are marked readOnlyHint.
+	// Codex honours this with default_tools_approval_mode = "writes" (prompt
+	// only for non-read-only tools); run_command stays unannotated so it keeps
+	// prompting.
+	readOnly := []mcp.ToolOption{
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(false),
+	}
+	withRO := func(opts ...mcp.ToolOption) []mcp.ToolOption {
+		return append(append([]mcp.ToolOption{}, readOnly...), opts...)
 	}
 
 	s.AddTool(mcp.NewTool("review_start",
-		append([]mcp.ToolOption{
-			mcp.WithDescription("Start a read-only code review of changes in a host project folder by a peer agent (" + agents + "). Runs in the background on the host and returns a job_id immediately; poll job_status for the result. Reviews often take several minutes, longer than the MCP client's per-call limit, hence the job model. The peer never modifies files."),
+		append(withRO(
+			mcp.WithDescription("Start a read-only code review of changes in a host project folder by a peer agent ("+agents+"). Runs in the background on the host and returns a job_id immediately; poll job_status for the result. Reviews often take several minutes, longer than the MCP client's per-call limit, hence the job model. The peer never modifies files."),
 			folderOpt, agentOpt,
-		}, scopeOpts...)...,
+		), scopeOpts...)...,
 	), reviewHandler(""))
 
-	s.AddTool(mcp.NewTool("chat_start",
+	s.AddTool(mcp.NewTool("chat_start", withRO(
 		mcp.WithDescription("Send one message to a peer agent ("+agents+") that can read the host project folder (read-only) and get its reply via job_status. Use it for second opinions, design critique or a multi-round discussion: the job_status result includes a session_id; pass it back as session_id to continue the same conversation. Runs in the background; poll job_status."),
 		folderOpt, agentOpt,
 		mcp.WithString("message", mcp.Required(), mcp.Description("What to say to the peer. Include the context it needs (what you changed, what you want its opinion on); it only sees the repo and this conversation.")),
 		mcp.WithString("session_id", mcp.Description("session_id from a previous job_status result to continue that conversation. Omit to start a new one.")),
-	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	)...), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		folder, err := req.RequireString("folder")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -105,22 +117,25 @@ func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCP
 		return text(svc.ChatStart(ctx, req.GetString("agent", ""), folder, msg, req.GetString("session_id", "")))
 	})
 
-	s.AddTool(mcp.NewTool("job_status",
-		mcp.WithDescription("Get the status/result of a background job started with review_start or chat_start. Blocks up to ~50s waiting for completion, then returns either the finished result or a 'running' notice; keep calling with the same job_id until it completes. Finished results stay available for ~30 minutes."),
+	pollDesc := fmt.Sprintf("Blocks up to ~%s waiting for completion", statusPoll.Round(time.Second))
+	s.AddTool(mcp.NewTool("job_status", withRO(
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithDescription("Get the status/result of a background job started with review_start or chat_start. "+pollDesc+", then returns either the finished result or a 'running' notice; keep calling with the same job_id until it completes. Finished results stay available for ~30 minutes."),
 		mcp.WithString("job_id", mcp.Required(), mcp.Description("The job_id returned by review_start / chat_start")),
-	), statusHandler)
+	)...), statusHandler)
 
 	// Deprecated aliases kept so existing installs and skills keep working.
 	s.AddTool(mcp.NewTool("codex_review_start",
-		append([]mcp.ToolOption{
+		append(withRO(
 			mcp.WithDescription("Deprecated: use review_start (optionally with agent=codex). Starts a read-only codex review in the background and returns a job_id; poll job_status or codex_review_status."),
 			folderOpt,
-		}, scopeOpts...)...,
+		), scopeOpts...)...,
 	), reviewHandler("codex"))
-	s.AddTool(mcp.NewTool("codex_review_status",
-		mcp.WithDescription("Deprecated: use job_status. Same behaviour: blocks up to ~50s and returns the finished review or a 'running' notice."),
+	s.AddTool(mcp.NewTool("codex_review_status", withRO(
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithDescription("Deprecated: use job_status. Same behaviour: "+pollDesc+" and returns the finished review or a 'running' notice."),
 		mcp.WithString("job_id", mcp.Required(), mcp.Description("The job_id returned by codex_review_start / review_start")),
-	), statusHandler)
+	)...), statusHandler)
 
 	s.AddTool(mcp.NewTool("run_command",
 		mcp.WithDescription("Run an allowlisted command (argv, no shell) in a host folder."),

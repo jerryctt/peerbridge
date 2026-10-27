@@ -69,6 +69,12 @@ type Config struct {
 	MaxOutputBytes  int           `yaml:"max_output_bytes"`
 	CodexExtraArgs  []string      `yaml:"codex_extra_args"`
 	StreamOutput    *bool         `yaml:"stream_output"`
+	// StatusPoll is how long job_status blocks waiting for a job before
+	// answering "running". Longer means fewer polls (and fewer permission
+	// prompts in the GUI) but it must stay under the MCP client's per-call
+	// timeout: Codex tool_timeout_sec (120 when installed by our scripts, 60
+	// by default), Claude Desktop ~180s. Default 50s.
+	StatusPoll time.Duration `yaml:"status_poll"`
 	// Agents holds per-peer CLI settings keyed by agent name ("codex",
 	// "claude"). Missing entries/fields fall back to DefaultAgents.
 	Agents map[string]AgentConfig `yaml:"agents"`
@@ -123,6 +129,12 @@ func Load(path string) (*Config, error) {
 	}
 	if c.MaxOutputBytes == 0 {
 		c.MaxOutputBytes = 200000
+	}
+	if c.StatusPoll == 0 {
+		c.StatusPoll = 50 * time.Second
+	}
+	if c.StatusPoll < 5*time.Second || c.StatusPoll > 170*time.Second {
+		return nil, fmt.Errorf("status_poll must be between 5s and 170s (got %s); it has to stay below the MCP client's per-call timeout", c.StatusPoll)
 	}
 	if c.StreamOutput == nil {
 		v := true

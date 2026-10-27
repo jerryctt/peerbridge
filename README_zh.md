@@ -203,6 +203,10 @@ timeout: 600s
 # 單次工具呼叫回傳的最大位元組數（超過會截斷並附註）。
 max_output_bytes: 200000
 
+# job_status 回「running」前最多等多久。越長輪詢越少、權限詢問也越少。
+# 必須低於 client 的單次呼叫時限（Codex tool_timeout_sec：安裝腳本寫 120；Claude Desktop 約 180 秒）。
+status_poll: 100s
+
 # 是否即時把 peer CLI 輸出 tee 到 server 的 stderr（預設 true）。
 # Claude Desktop 會收進 ~/Library/Logs/Claude/mcp-server-hostrunner.log。
 stream_output: true
@@ -348,6 +352,14 @@ chat_start(folder="/Users/you/proj", session_id="abc…", message="Point 2 only 
 **回傳：** exit code、耗時、stdout、stderr。
 
 ---
+
+## 權限詢問
+
+每個 host 預設都會在執行 MCP 工具前詢問；一次 review 是一個 `review_start` 加上好幾次 `job_status` 輪詢，所以預設下大約每 50 秒就會被問一次。有三個地方可以調：
+
+- **減少輪詢次數。** `config.yaml` 的 `status_poll` 是 `job_status` 回「running」前最多等多久。範例設 `100s`（配合安裝腳本寫入的 `tool_timeout_sec = 120` 與 Claude Desktop 約 180 秒的上限都安全），內建預設 `50s`。一定要低於 client 的單次呼叫時限。
+- **Codex。** 安裝腳本會在 `[mcp_servers.hostrunner]` 區塊寫入 `default_tools_approval_mode = "writes"`：Codex 只會對*沒有*標為唯讀的工具詢問。`review_start`、`chat_start`、`job_status` 都帶 MCP 的 `readOnlyHint` 註解（peer 從不改任何東西），所以不會被問；`run_command` 仍會問。改成 `"approve"` 就完全不問，或用 `[mcp_servers.hostrunner.tools.run_command] approval_mode = "approve"` 單獨放行某個工具。
+- **Claude。** Claude Desktop / Cowork 在每個工具第一次詢問時選 **Always allow**（會以工具為單位記住）。Claude Code 則在 `~/.claude/settings.json` 加權限規則：`{"permissions": {"allow": ["mcp__hostrunner__*"]}}`——若是透過 marketplace plugin 安裝，server 名稱是 `plugin_hostrunner_hostrunner`，要寫 `"mcp__plugin_hostrunner_hostrunner__*"`。Claude Code 目前不會依 `readOnlyHint` 自動放行 MCP 工具，所以要明確加規則。
 
 ## Skills
 

@@ -127,3 +127,29 @@ func TestChatStartWithoutAgentOrClientInfoIsToolError(t *testing.T) {
 		t.Errorf("want isError with 'specify agent', got %q isError=%v", toolText(res), res.IsError)
 	}
 }
+
+func TestReadOnlyAnnotations(t *testing.T) {
+	cfg, _ := newCfg(t)
+	cfg.StatusPoll = 100 * time.Second
+	s, shutdown := New(cfg, &fakeRunner{}, zerolog.Nop())
+	defer shutdown()
+	var list mcp.ListToolsResult
+	rpc(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, &list)
+	for _, tl := range list.Tools {
+		ro := tl.Annotations.ReadOnlyHint
+		isRO := ro != nil && *ro
+		switch tl.Name {
+		case "run_command":
+			if isRO {
+				t.Errorf("run_command must NOT be marked read-only")
+			}
+		default:
+			if !isRO {
+				t.Errorf("%s should be marked readOnlyHint", tl.Name)
+			}
+		}
+		if tl.Name == "job_status" && !strings.Contains(tl.Description, "~1m40s") {
+			t.Errorf("job_status description should reflect status_poll: %q", tl.Description)
+		}
+	}
+}
