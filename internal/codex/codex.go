@@ -1,39 +1,15 @@
+// Package codex is the agent.Backend for the OpenAI Codex CLI.
 package codex
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
-	"io"
-	"time"
+	"strings"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/exec"
+	"github.com/jerryctt/hostrunner-mcp/internal/agent"
 )
 
-type Runner interface {
-	Run(ctx context.Context, req exec.Request) (exec.Result, error)
-}
-
-type ReviewParams struct {
-	Folder string
-	Mode   string
-	Base   string
-	Commit string
-	// Prompt is optional custom review instructions, appended as the trailing
-	// positional PROMPT arg to `codex review`. Leave empty for a general review.
-	Prompt string
-}
-
-type ReviewResult struct {
-	Mode      string
-	Output    string
-	Stderr    string
-	ExitCode  int
-	Elapsed   time.Duration
-	TimedOut  bool
-	Truncated bool
-}
-
-// ReviewArgs builds the codex CLI arguments for the given mode.
+// ReviewArgs builds the `codex review` CLI arguments for the given mode.
 //
 // In the codex CLI the scope flags are mutually exclusive with the positional
 // [PROMPT] argument ("error: the argument '--uncommitted' cannot be used with
@@ -47,71 +23,110 @@ type ReviewResult struct {
 //     prompt text and returned as `positional`, to be appended as the last
 //     CLI argument.
 func ReviewArgs(mode, base, commit, prompt string) (args []string, positional string, err error) {
-	var scope string
-	switch mode {
-	case "", "uncommitted":
-		args = []string{"review", "--uncommitted"}
-		scope = "Review the uncommitted changes (staged, unstaged, and untracked)."
-	case "base":
-		if base == "" {
-			return nil, "", fmt.Errorf("mode=base requires a base ref")
-		}
-		args = []string{"review", "--base", base}
-		scope = fmt.Sprintf("Review the changes against base branch %s.", base)
-	case "commit":
-		if commit == "" {
-			return nil, "", fmt.Errorf("mode=commit requires a commit sha")
-		}
-		args = []string{"review", "--commit", commit}
-		scope = fmt.Sprintf("Review the changes introduced by commit %s.", commit)
-	default:
-		return nil, "", fmt.Errorf("unknown mode %q", mode)
+	scope, err := agent.ScopeSentence(mode, base, commit)
+	if err != nil {
+		return nil, "", err
 	}
 	if prompt != "" {
 		return []string{"review"}, scope + " " + prompt, nil
 	}
-	return args, "", nil
+	switch mode {
+	case "", "uncommitted":
+		return []string{"review", "--uncommitted"}, "", nil
+	case "base":
+		return []string{"review", "--base", base}, "", nil
+	default: // "commit" — ScopeSentence already rejected anything else
+		return []string{"review", "--commit", commit}, "", nil
+	}
 }
 
-// Review invokes `codex review` with the appropriate mode flag in p.Folder.
-// It does no git work itself; codex computes the diff.
-// streamTo, if non-nil, receives live stdout+stderr in addition to the captured Result.
-func Review(ctx context.Context, r Runner, codexCmd string, extraArgs []string, timeout time.Duration, maxBytes int, streamTo io.Writer, p ReviewParams) (ReviewResult, error) {
-	args, positional, err := ReviewArgs(p.Mode, p.Base, p.Commit, p.Prompt)
+// Backend implements agent.Backend for codex.
+type Backend struct{ s agent.Settings }
+
+// New returns a codex backend using the given settings.
+func New(s agent.Settings) *Backend { return &Backend{s: s} }
+
+func (b *Backend) Name() string    { return "codex" }
+func (b *Backend) Command() string { return b.s.Command }
+
+// ReviewArgs is native for codex: `codex review` computes the diff itself and
+// never writes files. Extra args go before the optional positional prompt.
+func (b *Backend) ReviewArgs(scope, base, commit, prompt string) ([]string, bool, error) {
+	args, positional, err := ReviewArgs(scope, base, commit, prompt)
 	if err != nil {
-		return ReviewResult{}, err
+		return nil, true, err
 	}
-	args = append(args, extraArgs...)
+	args = append(args, b.s.ExtraArgs...)
 	if positional != "" {
 		args = append(args, positional)
 	}
-
-	res, err := r.Run(ctx, exec.Request{
-		Command:        codexCmd,
-		Args:           args,
-		Dir:            p.Folder,
-		Timeout:        timeout,
-		MaxOutputBytes: maxBytes,
-		StreamTo:       streamTo,
-	})
-	if err != nil {
-		return ReviewResult{}, err
-	}
-
-	return ReviewResult{
-		Mode:      modeLabel(p.Mode),
-		Output:    res.Stdout,
-		Stderr:    res.Stderr,
-		ExitCode:  res.ExitCode,
-		Elapsed:   res.Elapsed,
-		TimedOut:  res.TimedOut,
-		Truncated: res.Truncated,
-	}, nil
+	return args, true, nil
 }
 
-func modeLabel(mode string) string {
-	if mode == "" {
-		return "uncommitted"
+// ChatArgs runs one non-interactive turn in a read-only sandbox, emitting
+// JSONL so ParseChat can recover the thread id. The hostrunner MCP server
+// entry is disabled inside the peer so it cannot call back into us.
+func (b *Backend) ChatArgs(message, sessionID string) []string {
+	args := []string{"exec"}
+	if sessionID != "" {
+		args = append(args, "resume")
 	}
-	return mode
+	args = append(args, "--json", "--sandbox", "read-only", "--skip-git-repo-check")
+	if b.s.MCPServerName != "" {
+		args = append(args, "-c", fmt.Sprintf("mcp_servers.%s.enabled=false", b.s.MCPServerName))
+	}
+	args = append(args, b.s.ExtraArgs...)
+	if sessionID != "" {
+		args = append(args, sessionID)
+	}
+	return append(args, message)
+}
+
+type jsonlEvent struct {
+	Type     string `json:"type"`
+	ThreadID string `json:"thread_id"`
+	Item     struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"item"`
+	Error struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// ParseChat reads `codex exec --json` output: thread.started carries the
+// session id, and every item.completed/agent_message carries reply text
+// (joined with blank lines when there are several).
+func (b *Backend) ParseChat(stdout string) (reply, sessionID string, err error) {
+	var parts []string
+	var failure string
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var ev jsonlEvent
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "thread.started":
+			sessionID = ev.ThreadID
+		case "item.completed":
+			if ev.Item.Type == "agent_message" && ev.Item.Text != "" {
+				parts = append(parts, ev.Item.Text)
+			}
+		case "turn.failed", "error":
+			if ev.Error.Message != "" {
+				failure = ev.Error.Message
+			}
+		}
+	}
+	if len(parts) == 0 {
+		if failure != "" {
+			return "", sessionID, fmt.Errorf("codex turn failed: %s", failure)
+		}
+		return "", sessionID, fmt.Errorf("no agent_message in codex output; tail: %s", agent.Tail(stdout, 2048))
+	}
+	return strings.Join(parts, "\n\n"), sessionID, nil
 }

@@ -9,20 +9,24 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/jerryctt/hostrunner-mcp/internal/agent"
 )
 
 // keepFinished is how long a finished job's result stays retrievable.
 const keepFinished = 30 * time.Minute
 
-// reviewJob is a background codex review. The output/isErr/ended fields are
-// written exactly once by finish() before done is closed; readers must only
-// access them after observing <-done (the channel close provides the
-// happens-before edge).
-type reviewJob struct {
+// job is a background peer-agent invocation (review or chat). The
+// output/isErr/ended fields are written exactly once by finish() before done
+// is closed; readers must only access them after observing <-done (the
+// channel close provides the happens-before edge).
+type job struct {
 	ID      string
 	Folder  string
-	Root    string // worktree root used as the duplicate-detection key
-	Mode    string
+	Root    string // worktree root; part of the duplicate-detection key
+	Agent   string
+	Kind    agent.Kind
+	Mode    string // review scope label, or "" for chat
 	Started time.Time
 
 	done   chan struct{}
@@ -31,14 +35,14 @@ type reviewJob struct {
 	ended  time.Time
 }
 
-func (j *reviewJob) finish(output string, isErr bool) {
+func (j *job) finish(output string, isErr bool) {
 	j.output = output
 	j.isErr = isErr
 	j.ended = time.Now()
 	close(j.done)
 }
 
-func (j *reviewJob) finished() bool {
+func (j *job) finished() bool {
 	select {
 	case <-j.done:
 		return true
@@ -49,7 +53,7 @@ func (j *reviewJob) finished() bool {
 
 type jobStore struct {
 	mu   sync.Mutex
-	jobs map[string]*reviewJob
+	jobs map[string]*job
 
 	// ctx is the server-lifetime context background jobs run under, so that
 	// shutdown() can cancel in-flight codex processes instead of orphaning
@@ -60,7 +64,7 @@ type jobStore struct {
 
 func newJobStore() *jobStore {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &jobStore{jobs: make(map[string]*reviewJob), ctx: ctx, cancel: cancel}
+	return &jobStore{jobs: make(map[string]*job), ctx: ctx, cancel: cancel}
 }
 
 // shutdown cancels all running jobs and waits up to grace for their
@@ -69,7 +73,7 @@ func (s *jobStore) shutdown(grace time.Duration) {
 	s.cancel()
 	deadline := time.After(grace)
 	s.mu.Lock()
-	var pending []*reviewJob
+	var pending []*job
 	for _, j := range s.jobs {
 		if !j.finished() {
 			pending = append(pending, j)
@@ -85,27 +89,30 @@ func (s *jobStore) shutdown(grace time.Duration) {
 	}
 }
 
-// add registers a new job. It refuses to start a second review for a folder
-// that already has one running: each review spawns a long-running codex
-// process on the host, so retries or impatient clients must poll the existing
-// job instead of stacking processes.
-func (s *jobStore) add(folder, mode string) (*reviewJob, error) {
+// add registers a new job. It refuses to start a second job with the same
+// (worktree root, agent, kind) while one is running: each job spawns a
+// long-running CLI process on the host, so retries or impatient clients must
+// poll the existing job instead of stacking processes. Different agents or
+// kinds on the same repo (a codex review plus a claude chat) may run together.
+func (s *jobStore) add(folder, agentName string, kind agent.Kind, mode string) (*job, error) {
 	root := worktreeRoot(folder)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gcLocked()
 	for _, j := range s.jobs {
-		if j.Root == root && !j.finished() {
+		if j.Root == root && j.Agent == agentName && j.Kind == kind && !j.finished() {
 			return nil, fmt.Errorf(
-				"a review of %s is already running (job %s, started %s ago); poll codex_review_status with that job_id instead of starting another",
-				j.Folder, j.ID, time.Since(j.Started).Round(time.Second),
+				"a %s %s of %s is already running (job %s, started %s ago); poll job_status with that job_id instead of starting another",
+				agentName, kind, j.Folder, j.ID, time.Since(j.Started).Round(time.Second),
 			)
 		}
 	}
-	j := &reviewJob{
+	j := &job{
 		ID:      newJobID(),
 		Folder:  folder,
 		Root:    root,
+		Agent:   agentName,
+		Kind:    kind,
 		Mode:    mode,
 		Started: time.Now(),
 		done:    make(chan struct{}),
@@ -114,7 +121,7 @@ func (s *jobStore) add(folder, mode string) (*reviewJob, error) {
 	return j, nil
 }
 
-func (s *jobStore) get(id string) (*reviewJob, bool) {
+func (s *jobStore) get(id string) (*job, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gcLocked() // enforce keepFinished on retrieval, not only on add

@@ -1,26 +1,11 @@
 package codex
 
 import (
-	"context"
 	"strings"
 	"testing"
 
-	"github.com/jerryctt/hostrunner-mcp/internal/exec"
+	"github.com/jerryctt/hostrunner-mcp/internal/agent"
 )
-
-type fakeRunner struct {
-	calls []exec.Request
-	reply map[string]exec.Result
-}
-
-func (f *fakeRunner) Run(_ context.Context, req exec.Request) (exec.Result, error) {
-	f.calls = append(f.calls, req)
-	key := req.Command + " " + strings.Join(req.Args, " ")
-	if r, ok := f.reply[key]; ok {
-		return r, nil
-	}
-	return exec.Result{}, nil
-}
 
 func TestReviewArgs(t *testing.T) {
 	// "" and "uncommitted" both produce ["review", "--uncommitted"]
@@ -103,136 +88,88 @@ func TestReviewArgsPromptSuppressesScopeFlags(t *testing.T) {
 	}
 }
 
-func TestReviewHappyPath(t *testing.T) {
-	f := &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted": {Stdout: "LGTM", ExitCode: 0},
-	}}
-	res, err := Review(context.Background(), f, "codex", nil, 0, 1000, nil, ReviewParams{
-		Folder: "/repo", Mode: "uncommitted",
-	})
-	if err != nil {
-		t.Fatalf("Review: %v", err)
-	}
-	if res.Output != "LGTM" {
-		t.Errorf("Output = %q, want LGTM", res.Output)
-	}
-	if res.Mode != "uncommitted" {
-		t.Errorf("Mode = %q, want uncommitted", res.Mode)
-	}
-
-	// Verify runner was called with correct command and args
-	if len(f.calls) != 1 {
-		t.Fatalf("expected 1 runner call, got %d", len(f.calls))
-	}
-	call := f.calls[0]
-	if call.Command != "codex" {
-		t.Errorf("Command = %q, want codex", call.Command)
-	}
-	hasReview := false
-	hasUncommitted := false
-	for _, a := range call.Args {
-		if a == "review" {
-			hasReview = true
-		}
-		if a == "--uncommitted" {
-			hasUncommitted = true
-		}
-		if a == "--write" || a == "--full-auto" {
-			t.Errorf("read-only check: got disallowed arg %q", a)
-		}
-	}
-	if !hasReview || !hasUncommitted {
-		t.Errorf("Args = %v, want to contain 'review' and '--uncommitted'", call.Args)
-	}
-
-	// No git work (stdin should be empty)
-	if call.Stdin != "" {
-		t.Errorf("Stdin should be empty (no diff piping), got %q", call.Stdin)
-	}
+func newBackend() *Backend {
+	return New(agent.Settings{Command: "codex", MCPServerName: "hostrunner"})
 }
 
-func TestReviewBaseMode(t *testing.T) {
-	f := &fakeRunner{reply: map[string]exec.Result{
-		"codex review --base main": {Stdout: "looks good", ExitCode: 0},
-	}}
-	res, err := Review(context.Background(), f, "codex", nil, 0, 1000, nil, ReviewParams{
-		Folder: "/repo", Mode: "base", Base: "main",
-	})
-	if err != nil {
-		t.Fatalf("Review base mode: %v", err)
+func TestBackendReviewArgsNativeWithExtraArgs(t *testing.T) {
+	b := New(agent.Settings{Command: "codex", ExtraArgs: []string{"-c", "model=o3"}})
+	args, native, err := b.ReviewArgs("uncommitted", "", "", "")
+	if err != nil || !native {
+		t.Fatalf("err=%v native=%v", err, native)
 	}
-	if res.Output != "looks good" {
-		t.Errorf("Output = %q, want 'looks good'", res.Output)
+	if got := strings.Join(args, " "); got != "review --uncommitted -c model=o3" {
+		t.Errorf("args = %q", got)
 	}
-	if res.Mode != "base" {
-		t.Errorf("Mode = %q, want base", res.Mode)
-	}
-	if len(f.calls) != 1 {
-		t.Fatalf("expected 1 runner call, got %d", len(f.calls))
-	}
-	args := f.calls[0].Args
-	if strings.Join(args, " ") != "review --base main" {
-		t.Errorf("Args = %v, want [review --base main]", args)
-	}
-}
-
-func TestReviewExtraArgs(t *testing.T) {
-	f := &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted -c model=o3": {Stdout: "ok", ExitCode: 0},
-	}}
-	res, err := Review(context.Background(), f, "codex", []string{"-c", "model=o3"}, 0, 1000, nil, ReviewParams{
-		Folder: "/repo", Mode: "uncommitted",
-	})
-	if err != nil {
-		t.Fatalf("Review extra args: %v", err)
-	}
-	if res.Output != "ok" {
-		t.Errorf("Output = %q, want ok", res.Output)
-	}
-}
-
-func TestReviewWithPrompt(t *testing.T) {
-	f := &fakeRunner{}
-	res, err := Review(context.Background(), f, "codex", nil, 0, 1000, nil, ReviewParams{
-		Folder: "/repo", Mode: "uncommitted", Prompt: "focus on error handling",
-	})
-	if err != nil {
-		t.Fatalf("Review with prompt: %v", err)
-	}
-	if res.Mode != "uncommitted" {
-		t.Errorf("Mode = %q, want uncommitted", res.Mode)
-	}
-	if len(f.calls) != 1 {
-		t.Fatalf("expected 1 runner call, got %d", len(f.calls))
-	}
-	args := f.calls[0].Args
-	// codex rejects --uncommitted together with [PROMPT]; the prompt must be
-	// the only argument after "review", with the scope folded into it.
-	if len(args) != 2 || args[0] != "review" {
-		t.Fatalf("args = %v, want [review <prompt>]", args)
+	// With a prompt the positional goes last, after extra args.
+	args, _, _ = b.ReviewArgs("base", "main", "", "focus on auth")
+	if args[0] != "review" || args[len(args)-1] == "model=o3" || !strings.Contains(args[len(args)-1], "focus on auth") {
+		t.Errorf("prompt should be the final positional: %v", args)
 	}
 	for _, a := range args {
-		if strings.HasPrefix(a, "--") {
-			t.Errorf("args = %v: no flags allowed alongside a prompt", args)
+		if a == "--write" || a == "--full-auto" || a == "--dangerously-bypass-approvals-and-sandbox" {
+			t.Errorf("read-only check: disallowed arg %q", a)
 		}
 	}
-	if !strings.Contains(args[1], "uncommitted") || !strings.Contains(args[1], "focus on error handling") {
-		t.Errorf("prompt arg = %q, want scope sentence + caller prompt", args[1])
+	if _, _, err := b.ReviewArgs("commit", "", "", ""); err == nil {
+		t.Error("commit without sha should error")
 	}
 }
 
-func TestReviewModeEmptyLabel(t *testing.T) {
-	f := &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted": {Stdout: "fine", ExitCode: 0},
-	}}
-	res, err := Review(context.Background(), f, "codex", nil, 0, 1000, nil, ReviewParams{
-		Folder: "/repo", Mode: "",
-	})
-	if err != nil {
-		t.Fatalf("Review empty mode: %v", err)
+func TestBackendChatArgs(t *testing.T) {
+	b := newBackend()
+	got := strings.Join(b.ChatArgs("hello there", ""), " ")
+	want := "exec --json --sandbox read-only --skip-git-repo-check -c mcp_servers.hostrunner.enabled=false hello there"
+	if got != want {
+		t.Errorf("new session:\n got %q\nwant %q", got, want)
 	}
-	// modeLabel("") should return "uncommitted"
-	if res.Mode != "uncommitted" {
-		t.Errorf("Mode = %q, want uncommitted", res.Mode)
+	got = strings.Join(b.ChatArgs("more", "thread-123"), " ")
+	want = "exec resume --json --sandbox read-only --skip-git-repo-check -c mcp_servers.hostrunner.enabled=false thread-123 more"
+	if got != want {
+		t.Errorf("resume:\n got %q\nwant %q", got, want)
+	}
+	// No MCP server name -> no -c override.
+	b2 := New(agent.Settings{Command: "codex", ExtraArgs: []string{"-m", "o3"}})
+	got = strings.Join(b2.ChatArgs("x", ""), " ")
+	if strings.Contains(got, "mcp_servers") || !strings.HasSuffix(got, "-m o3 x") {
+		t.Errorf("args = %q", got)
+	}
+}
+
+const codexJSONL = `{"type":"thread.started","thread_id":"0199a-thread"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"reasoning","text":"thinking"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"First part."}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Second part."}}
+{"type":"turn.completed","usage":{"input_tokens":1}}
+`
+
+func TestBackendParseChat(t *testing.T) {
+	reply, sid, err := newBackend().ParseChat(codexJSONL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid != "0199a-thread" {
+		t.Errorf("session = %q", sid)
+	}
+	if reply != "First part.\n\nSecond part." {
+		t.Errorf("reply = %q", reply)
+	}
+}
+
+func TestBackendParseChatErrors(t *testing.T) {
+	b := newBackend()
+	// No agent message at all.
+	_, sid, err := b.ParseChat(`{"type":"thread.started","thread_id":"t1"}` + "\n" + `{"type":"turn.failed","error":{"message":"boom"}}` + "\n")
+	if err == nil || !strings.Contains(err.Error(), "boom") || sid != "t1" {
+		t.Errorf("want error mentioning boom and session t1, got err=%v sid=%q", err, sid)
+	}
+	// Garbage / non-JSON lines are skipped, not fatal.
+	_, _, err = b.ParseChat("warning: something\n" + codexJSONL)
+	if err != nil {
+		t.Errorf("non-JSON prefix should be ignored: %v", err)
+	}
+	if _, _, err = b.ParseChat(""); err == nil {
+		t.Error("empty output should error")
 	}
 }

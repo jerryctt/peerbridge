@@ -37,6 +37,45 @@ type Config struct {
 	MaxOutputBytes  int           `yaml:"max_output_bytes"`
 	CodexExtraArgs  []string      `yaml:"codex_extra_args"`
 	StreamOutput    *bool         `yaml:"stream_output"`
+	// Agents holds per-peer CLI settings keyed by agent name ("codex",
+	// "claude"). Missing entries/fields fall back to DefaultAgents.
+	Agents map[string]AgentConfig `yaml:"agents"`
+}
+
+// AgentConfig configures one peer CLI (see internal/agent.Settings).
+type AgentConfig struct {
+	Command       string   `yaml:"command"`
+	ExtraArgs     []string `yaml:"extra_args"`
+	MCPServerName string   `yaml:"mcp_server_name"`
+}
+
+// DefaultAgents returns the built-in agent settings.
+func DefaultAgents() map[string]AgentConfig {
+	return map[string]AgentConfig{
+		"codex":  {Command: "codex", MCPServerName: "hostrunner"},
+		"claude": {Command: "claude"},
+	}
+}
+
+// Agent returns the effective settings for name, falling back to defaults
+// field by field so a partial `agents:` entry still works. The legacy
+// top-level codex_extra_args are appended to agents.codex.extra_args.
+func (c *Config) Agent(name string) AgentConfig {
+	def := DefaultAgents()[name]
+	a, ok := c.Agents[name]
+	if !ok {
+		a = def
+	}
+	if a.Command == "" {
+		a.Command = def.Command
+	}
+	if a.MCPServerName == "" {
+		a.MCPServerName = def.MCPServerName
+	}
+	if name == "codex" && len(c.CodexExtraArgs) > 0 {
+		a.ExtraArgs = append(append([]string{}, a.ExtraArgs...), c.CodexExtraArgs...)
+	}
+	return a
 }
 
 func Load(path string) (*Config, error) {
@@ -60,6 +99,9 @@ func Load(path string) (*Config, error) {
 	if c.StreamOutput == nil {
 		v := true
 		c.StreamOutput = &v
+	}
+	if c.Agents == nil {
+		c.Agents = map[string]AgentConfig{}
 	}
 	if len(c.AllowedRoots) == 0 {
 		return nil, fmt.Errorf("allowed_roots must not be empty")

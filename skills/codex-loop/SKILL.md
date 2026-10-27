@@ -4,8 +4,8 @@ description: >
   Run a codex review on my latest edits. Use when the user says things like
   "review my changes with codex", "run codex on my edits", "start an edit-review loop",
   "check my code with codex", or "do a codex review". After each round of file edits,
-  calls the codex_review_start MCP tool with the connected folder's HOST path, polls
-  codex_review_status until the result is ready, summarizes the findings, and iterates
+  calls the review_start MCP tool (agent=codex) with the connected folder's HOST path,
+  polls job_status until the result is ready, summarizes the findings, and iterates
   until the review is clean.
 ---
 
@@ -15,8 +15,8 @@ description: >
 
 After you (or the user) have edited files in the connected project folder, this skill:
 
-1. Calls the `codex_review_start` MCP tool with the project's **host path** — it returns a `job_id` immediately while the review runs in the background on the host.
-2. Polls `codex_review_status` with that `job_id` until the review completes.
+1. Calls the `review_start` MCP tool with `agent = "codex"` and the project's **host path** — it returns a `job_id` immediately while the review runs in the background on the host.
+2. Polls `job_status` with that `job_id` until the review completes.
 3. Summarizes the issues and suggests fixes.
 4. Applies fixes using Read/Write/Edit tools.
 5. Starts a new review to verify the fixes.
@@ -26,18 +26,20 @@ Reviews run as background jobs because they often take several minutes — longe
 
 ## Critical: always use the HOST path
 
-The `folder` parameter to `codex_review_start` must be the **host machine path** — the path you would use in a terminal on the user's Mac or Linux machine.
+The `folder` parameter to `review_start` must be the **host machine path** — the path you would use in a terminal on the user's Mac or Linux machine.
 
 **Correct:**
 ```
-codex_review_start(
+review_start(
+  agent  = "codex",
   folder = "/Users/yourname/code/myproject"
 )
 ```
 
 **WRONG — never pass a sandbox path:**
 ```
-codex_review_start(
+review_start(
+  agent  = "codex",
   folder = "/sessions/abc123/mnt/myproject"   <- REJECTED
 )
 ```
@@ -69,7 +71,8 @@ If the output is empty there is nothing to review yet. Tell the user and wait fo
 ### Step 3 — Start the review
 
 ```
-codex_review_start(
+review_start(
+  agent  = "codex",
   folder = "/Users/yourname/code/myproject"
 )
 ```
@@ -78,7 +81,8 @@ codex_review_start(
 
 For a branch diff against a base ref (e.g. `main`):
 ```
-codex_review_start(
+review_start(
+  agent  = "codex",
   folder = "/Users/yourname/code/myproject",
   scope  = "base",
   base   = "main"
@@ -87,7 +91,8 @@ codex_review_start(
 
 For a specific commit:
 ```
-codex_review_start(
+review_start(
+  agent  = "codex",
   folder = "/Users/yourname/code/myproject",
   scope  = "commit",
   commit = "<SHA>"
@@ -101,7 +106,8 @@ The result contains a `job_id` — note it for the next step.
 **Only pass `prompt` when the user explicitly asks to narrow or focus the review** (e.g. "focus on security", "only review the concurrency changes"). For a normal review, omit it entirely. Do not restate the scope in the prompt (e.g. never `prompt = "review my uncommitted changes"`) — the scope parameter already covers that.
 
 ```
-codex_review_start(
+review_start(
+  agent  = "codex",
   folder = "/Users/yourname/code/myproject",
   prompt = "focus on error handling and resource cleanup"
 )
@@ -112,12 +118,12 @@ It is safe to combine `prompt` with any `scope`: the codex CLI forbids scope fla
 ### Step 4 — Poll for the result
 
 ```
-codex_review_status(
+job_status(
   job_id = "<job_id from step 3>"
 )
 ```
 
-Each call blocks up to ~50s waiting for completion, then returns either the finished review or `status: running`. If it is still running, call `codex_review_status` again with the same `job_id` — keep polling until it completes. Reviews typically take 1–10 minutes; do not give up or restart the review just because a few polls returned `running`.
+Each call blocks up to ~50s waiting for completion, then returns either the finished review or `status: running`. If it is still running, call `job_status` again with the same `job_id` — keep polling until it completes. Reviews typically take 1–10 minutes; do not give up or restart the review just because a few polls returned `running`.
 
 ### Step 5 — Summarize and fix
 
@@ -130,7 +136,7 @@ The verdict is the text under `--- Codex review ---` in the completed status res
 
 ### Step 6 — Re-review
 
-After applying all fixes, call `codex_review_start` again with the same parameters (a fresh review needs a fresh job), and poll as in Step 4. If the review returns no issues or only informational notes, the loop is complete. Tell the user the review is clean.
+After applying all fixes, call `review_start` again with the same parameters (a fresh review needs a fresh job), and poll as in Step 4. If the review returns no issues or only informational notes, the loop is complete. Tell the user the review is clean.
 
 ### Step 7 — Repeat if needed
 
@@ -138,8 +144,10 @@ If new issues appear in the re-review, repeat from Step 5.
 
 ## Tips
 
+- The old names `codex_review_start` / `codex_review_status` still work but are deprecated aliases of `review_start(agent="codex")` / `job_status`. For an agent-neutral version of this loop (works in Codex too, reviewing with Claude) use the `peer-review` skill.
+
 - The default scope `uncommitted` covers staged, unstaged, and untracked changes — `codex review` computes the diff itself.
-- One review = one `codex_review_start` + repeated `codex_review_status` polls. Never call `codex_review_start` again while a job for the same folder is still running.
+- One review = one `review_start` + repeated `job_status` polls. Never call `review_start` again while a job for the same folder is still running.
 - If the tool returns an error like `"got a sandbox path"`, you passed a `/sessions/...` path. Stop and ask the user for the correct host path.
 - If the output is marked `[output truncated]`, the diff is very large. Consider asking the user to scope the review to fewer files or review a specific commit instead.
-- Finished job results stay retrievable via `codex_review_status` for ~30 minutes.
+- Finished job results stay retrievable via `job_status` for ~30 minutes.

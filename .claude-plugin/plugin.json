@@ -1,7 +1,18 @@
 {
   "name": "hostrunner",
-  "version": "0.2.1",
-  "description": "Local MCP server + Claude plugin for read-only Codex code reviews on your machine — an edit → review → edit loop, bridging the Claude sandbox to your host codex CLI.",
-  "author": { "name": "Jerry Chan", "email": "jerrycttdev@gmail.com" },
-  "keywords": ["codex", "code-review", "mcp", "host", "edit-review-loop"]
+  "version": "0.3.0",
+  "description": "Local MCP server + plugin for Claude and Codex: let either agent ask the other for a read-only code review or a multi-turn discussion on your machine, bridging sandboxes to your host codex / claude CLIs.",
+  "author": {
+    "name": "Jerry Chan",
+    "email": "jerrycttdev@gmail.com"
+  },
+  "keywords": [
+    "codex",
+    "claude",
+    "code-review",
+    "peer-review",
+    "mcp",
+    "host",
+    "edit-review-loop"
+  ]
 }

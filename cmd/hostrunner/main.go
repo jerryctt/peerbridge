@@ -34,20 +34,22 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Str("path", cfgPath).Msg("load config (create it from examples/config.example.yaml, or set HOSTRUNNER_CONFIG / -config)")
 	}
-	// Config is read once at startup: after editing it, restart Claude Desktop
-	// (which respawns this server). This line makes the effective values
+	// Config is read once at startup: after editing it, restart Claude Desktop /
+	// the Codex app (which respawns this server). This line makes the effective values
 	// verifiable in mcp-server-hostrunner.log.
 	log.Info().
 		Str("config", cfgPath).
 		Str("timeout", cfg.Timeout.String()).
 		Strs("allowed_roots", cfg.AllowedRoots).
 		Strs("allowed_commands", cfg.AllowedCommands).
+		Str("codex_command", cfg.Agent("codex").Command).
+		Str("claude_command", cfg.Agent("claude").Command).
 		Msg("config loaded")
 
 	s, shutdown := internalserver.New(cfg, exec.Runner{}, log)
 	err = mcpserver.ServeStdio(s)
-	// Cancel any in-flight background reviews so their codex process groups
-	// are killed rather than orphaned when this process exits.
+	// Cancel any in-flight background jobs so their CLI process groups are
+	// killed rather than orphaned when this process exits.
 	shutdown()
 	if err != nil {
 		log.Fatal().Err(err).Msg("server exited")

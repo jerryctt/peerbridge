@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jerryctt/hostrunner-mcp/internal/agent"
+	"github.com/jerryctt/hostrunner-mcp/internal/claude"
 	"github.com/jerryctt/hostrunner-mcp/internal/codex"
 	"github.com/jerryctt/hostrunner-mcp/internal/config"
 	"github.com/jerryctt/hostrunner-mcp/internal/exec"
@@ -16,71 +18,115 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// statusLongPoll is how long codex_review_status blocks waiting for the job
-// to finish before reporting "running". It must stay well under the MCP
-// client's per-call timeout (Claude Desktop kills tool calls at ~180s).
+// version is reported in the MCP initialize handshake. Keep in sync with
+// .claude-plugin/plugin.json.
+const version = "0.3.0"
+
+// statusLongPoll is how long job_status blocks waiting for the job to finish
+// before reporting "running". It must stay well under the MCP client's
+// per-call timeout (Claude Desktop kills tool calls at ~180s; the Codex
+// installer sets tool_timeout_sec = 120).
 const statusLongPoll = 50 * time.Second
 
 // New builds the MCP server. The returned shutdown func cancels any
-// still-running background review jobs (killing their codex process groups)
-// and should be called after the server stops serving.
-func New(cfg *config.Config, r codex.Runner, log zerolog.Logger) (*mcpserver.MCPServer, func()) {
-	s := mcpserver.NewMCPServer("hostrunner", "0.2.1", mcpserver.WithRecovery())
-	jobs := newJobStore()
+// still-running background jobs (killing their CLI process groups) and
+// should be called after the server stops serving.
+func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCPServer, func()) {
+	s := mcpserver.NewMCPServer("hostrunner", version, mcpserver.WithRecovery())
+	svc := NewService(cfg, r, log)
+	agents := strings.Join(svc.Backends.Names(), " | ")
 
-	startTool := mcp.NewTool("codex_review_start",
-		mcp.WithDescription("Start a read-only codex review of changes in a host project folder. The review runs in the background on the host and this call returns a job_id immediately; poll codex_review_status to get the result. (Reviews often take several minutes — longer than the MCP client's ~180s per-call limit — which is why they run as background jobs.) Uses 'codex review', which computes the diff itself and does not modify files."),
-		mcp.WithString("folder", mcp.Required(), mcp.Description("Absolute HOST path to the git repo (e.g. /Users/you/proj). Not a sandbox path.")),
+	text := func(out string, isErr bool) (*mcp.CallToolResult, error) {
+		if isErr {
+			return mcp.NewToolResultError(out), nil
+		}
+		return mcp.NewToolResultText(out), nil
+	}
+
+	agentOpt := mcp.WithString("agent",
+		mcp.Description("Which peer agent runs it: "+agents+". Omit to use the other vendor's agent automatically (a Claude client gets codex, a Codex client gets claude)."),
+		mcp.Enum(svc.Backends.Names()...),
+	)
+	folderOpt := mcp.WithString("folder", mcp.Required(), mcp.Description("Absolute HOST path to the git repo (e.g. /Users/you/proj). Not a sandbox path."))
+	scopeOpts := []mcp.ToolOption{
 		mcp.WithString("scope",
 			mcp.Description("Which changes to review: uncommitted (default, staged+unstaged+untracked), base (against a base branch, requires base param), or commit (a specific commit, requires commit param)"),
 			mcp.Enum("uncommitted", "base", "commit"),
 		),
 		mcp.WithString("base", mcp.Description("Base branch or ref, required when scope=base (e.g. main)")),
 		mcp.WithString("commit", mcp.Description("Commit SHA, required when scope=commit")),
-		mcp.WithString("prompt", mcp.Description("Custom review instructions. ONLY pass this when the user explicitly asks to narrow or focus the review (e.g. \"focus on concurrency\", \"only review the auth changes\"); omit it for a normal general review. Safe to combine with any scope: the server folds the scope into the prompt text, because the codex CLI rejects scope flags alongside a prompt.")),
-	)
-	s.AddTool(startTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		mcp.WithString("prompt", mcp.Description("Custom review instructions. ONLY pass this when the user explicitly asks to narrow or focus the review (e.g. \"focus on concurrency\"); omit it for a normal general review. Safe to combine with any scope.")),
+	}
+
+	reviewHandler := func(forceAgent string) mcpserver.ToolHandlerFunc {
+		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			folder, err := req.RequireString("folder")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			a := forceAgent
+			if a == "" {
+				a = req.GetString("agent", "")
+			}
+			return text(svc.ReviewStart(ctx, a, folder,
+				req.GetString("scope", "uncommitted"), req.GetString("base", ""), req.GetString("commit", ""), req.GetString("prompt", "")))
+		}
+	}
+	statusHandler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id, err := req.RequireString("job_id")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return text(svc.JobStatus(ctx, id, statusLongPoll))
+	}
+
+	s.AddTool(mcp.NewTool("review_start",
+		append([]mcp.ToolOption{
+			mcp.WithDescription("Start a read-only code review of changes in a host project folder by a peer agent (" + agents + "). Runs in the background on the host and returns a job_id immediately; poll job_status for the result. Reviews often take several minutes, longer than the MCP client's per-call limit, hence the job model. The peer never modifies files."),
+			folderOpt, agentOpt,
+		}, scopeOpts...)...,
+	), reviewHandler(""))
+
+	s.AddTool(mcp.NewTool("chat_start",
+		mcp.WithDescription("Send one message to a peer agent ("+agents+") that can read the host project folder (read-only) and get its reply via job_status. Use it for second opinions, design critique or a multi-round discussion: the job_status result includes a session_id; pass it back as session_id to continue the same conversation. Runs in the background; poll job_status."),
+		folderOpt, agentOpt,
+		mcp.WithString("message", mcp.Required(), mcp.Description("What to say to the peer. Include the context it needs (what you changed, what you want its opinion on); it only sees the repo and this conversation.")),
+		mcp.WithString("session_id", mcp.Description("session_id from a previous job_status result to continue that conversation. Omit to start a new one.")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		folder, err := req.RequireString("folder")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		out, isErr := HandleReviewStart(
-			cfg, r, log, jobs,
-			folder,
-			req.GetString("scope", "uncommitted"),
-			req.GetString("base", ""),
-			req.GetString("commit", ""),
-			req.GetString("prompt", ""),
-		)
-		if isErr {
-			return mcp.NewToolResultError(out), nil
-		}
-		return mcp.NewToolResultText(out), nil
-	})
-
-	statusTool := mcp.NewTool("codex_review_status",
-		mcp.WithDescription("Get the status/result of a background review started with codex_review_start. Blocks up to ~50s waiting for completion, then returns either the finished review or a 'running' notice — keep calling it with the same job_id until it completes. Finished results stay available for ~30 minutes."),
-		mcp.WithString("job_id", mcp.Required(), mcp.Description("The job_id returned by codex_review_start")),
-	)
-	s.AddTool(statusTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		jobID, err := req.RequireString("job_id")
+		msg, err := req.RequireString("message")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		out, isErr := HandleReviewStatus(ctx, jobs, jobID, statusLongPoll)
-		if isErr {
-			return mcp.NewToolResultError(out), nil
-		}
-		return mcp.NewToolResultText(out), nil
+		return text(svc.ChatStart(ctx, req.GetString("agent", ""), folder, msg, req.GetString("session_id", "")))
 	})
 
-	runTool := mcp.NewTool("run_command",
+	s.AddTool(mcp.NewTool("job_status",
+		mcp.WithDescription("Get the status/result of a background job started with review_start or chat_start. Blocks up to ~50s waiting for completion, then returns either the finished result or a 'running' notice; keep calling with the same job_id until it completes. Finished results stay available for ~30 minutes."),
+		mcp.WithString("job_id", mcp.Required(), mcp.Description("The job_id returned by review_start / chat_start")),
+	), statusHandler)
+
+	// Deprecated aliases kept so existing installs and skills keep working.
+	s.AddTool(mcp.NewTool("codex_review_start",
+		append([]mcp.ToolOption{
+			mcp.WithDescription("Deprecated: use review_start (optionally with agent=codex). Starts a read-only codex review in the background and returns a job_id; poll job_status or codex_review_status."),
+			folderOpt,
+		}, scopeOpts...)...,
+	), reviewHandler("codex"))
+	s.AddTool(mcp.NewTool("codex_review_status",
+		mcp.WithDescription("Deprecated: use job_status. Same behaviour: blocks up to ~50s and returns the finished review or a 'running' notice."),
+		mcp.WithString("job_id", mcp.Required(), mcp.Description("The job_id returned by codex_review_start / review_start")),
+	), statusHandler)
+
+	s.AddTool(mcp.NewTool("run_command",
 		mcp.WithDescription("Run an allowlisted command (argv, no shell) in a host folder."),
 		mcp.WithString("command", mcp.Required(), mcp.Description("Executable name; must be in the server allowlist")),
 		mcp.WithArray("args", mcp.WithStringItems(), mcp.Description("Arguments as a string array")),
-		mcp.WithString("folder", mcp.Required(), mcp.Description("Absolute HOST path inside an allowed root (e.g. /Users/you/proj). Not a /sessions/... sandbox path.")),
-	)
-	s.AddTool(runTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		folderOpt,
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		command, err := req.RequireString("command")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -89,129 +135,270 @@ func New(cfg *config.Config, r codex.Runner, log zerolog.Logger) (*mcpserver.MCP
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		out, isErr := HandleRunCommand(ctx, cfg, r, log, command, req.GetStringSlice("args", nil), folder)
-		if isErr {
-			return mcp.NewToolResultError(out), nil
-		}
-		return mcp.NewToolResultText(out), nil
+		return text(svc.RunCommand(ctx, command, req.GetStringSlice("args", nil), folder))
 	})
 
-	return s, func() { jobs.shutdown(3 * time.Second) }
+	return s, func() { svc.Jobs.shutdown(3 * time.Second) }
 }
 
-// HandleReviewStart validates the request, then runs the review in a
-// background goroutine so the MCP call returns immediately. The goroutine
-// deliberately does not use the request context (it is cancelled as soon as
-// this call returns); it runs under the job store's server-lifetime context
-// so shutdown() can still cancel it.
-func HandleReviewStart(cfg *config.Config, r codex.Runner, log zerolog.Logger, jobs *jobStore, folder, mode, base, commit, prompt string) (string, bool) {
-	dir, err := cfg.ResolveAllowedDir(folder)
+// Service holds the dependencies the tool handlers need.
+type Service struct {
+	Cfg      *config.Config
+	Runner   agent.Runner
+	Log      zerolog.Logger
+	Jobs     *jobStore
+	Backends agent.Registry
+}
+
+// NewService wires the codex and claude backends from cfg.
+func NewService(cfg *config.Config, r agent.Runner, log zerolog.Logger) *Service {
+	cx, cl := cfg.Agent("codex"), cfg.Agent("claude")
+	return &Service{
+		Cfg: cfg, Runner: r, Log: log, Jobs: newJobStore(),
+		Backends: agent.Registry{
+			"codex":  codex.New(agent.Settings{Command: cx.Command, ExtraArgs: cx.ExtraArgs, MCPServerName: cx.MCPServerName}),
+			"claude": claude.New(agent.Settings{Command: cl.Command, ExtraArgs: cl.ExtraArgs}),
+		},
+	}
+}
+
+// ResolveAgent picks the backend: an explicit name wins; otherwise the peer
+// is inferred from the MCP client's name (Claude talks to codex, Codex talks
+// to claude).
+func ResolveAgent(explicit, clientName string, reg agent.Registry) (agent.Backend, error) {
+	name := explicit
+	if name == "" {
+		inferred, ok := agent.Default(clientName)
+		if !ok {
+			return nil, fmt.Errorf("cannot infer which agent to use from MCP client %q; specify agent (one of: %s)", clientName, strings.Join(reg.Names(), ", "))
+		}
+		name = inferred
+	}
+	return reg.Get(name)
+}
+
+// clientName returns the MCP client's reported name for this call, or "".
+func clientName(ctx context.Context) string {
+	sess := mcpserver.ClientSessionFromContext(ctx)
+	if sess == nil {
+		return ""
+	}
+	if ci, ok := sess.(mcpserver.SessionWithClientInfo); ok {
+		return ci.GetClientInfo().Name
+	}
+	return ""
+}
+
+// ReviewStart validates the request, then runs the review in a background
+// goroutine so the MCP call returns immediately. The goroutine deliberately
+// does not use the request context (it is cancelled as soon as this call
+// returns); it runs under the job store's server-lifetime context so
+// shutdown() can still cancel it.
+func (s *Service) ReviewStart(ctx context.Context, agentName, folder, scope, base, commit, prompt string) (string, bool) {
+	b, err := ResolveAgent(agentName, clientName(ctx), s.Backends)
+	if err != nil {
+		return err.Error(), true
+	}
+	dir, err := s.Cfg.ResolveAllowedDir(folder)
 	if err != nil {
 		return err.Error(), true
 	}
 	// Catch bad scope/base/commit combinations now, not minutes later.
-	if _, _, err := codex.ReviewArgs(mode, base, commit, prompt); err != nil {
+	if _, _, err := b.ReviewArgs(scope, base, commit, prompt); err != nil {
 		return err.Error(), true
 	}
-	label := mode
+	label := scope
 	if label == "" {
 		label = "uncommitted"
 	}
-	j, err := jobs.add(dir, label)
+	j, err := s.Jobs.add(dir, b.Name(), agent.KindReview, label)
 	if err != nil {
 		return err.Error(), true
 	}
-	log.Info().Str("tool", "codex_review_start").Str("job", j.ID).Str("folder", dir).Str("mode", label).Msg("invocation")
+	s.Log.Info().Str("tool", "review_start").Str("job", j.ID).Str("agent", b.Name()).Str("folder", dir).Str("mode", label).Msg("invocation")
 	go func() {
-		out, isErr := HandleCodexReview(jobs.ctx, cfg, r, log, dir, mode, base, commit, prompt)
+		out, isErr := s.runReview(s.Jobs.ctx, b, dir, scope, base, commit, prompt)
 		j.finish(out, isErr)
 	}()
 	return fmt.Sprintf(
-		"Review started in the background.\njob_id: %s\nmode: %s\nfolder: %s\n\nCall codex_review_status with this job_id to get the result. Reviews typically take 1-10 minutes; the server-side limit is %s (config 'timeout').",
-		j.ID, label, dir, cfg.Timeout,
+		"Review started in the background.\njob_id: %s\nagent: %s\nmode: %s\nfolder: %s\n\nCall job_status with this job_id to get the result. Reviews typically take 1-10 minutes; the server-side limit is %s (config 'timeout').",
+		j.ID, b.Name(), label, dir, s.Cfg.Timeout,
 	), false
 }
 
-// HandleReviewStatus reports on a background review, blocking up to wait for
-// it to finish (long-poll) so callers need fewer round trips.
-func HandleReviewStatus(ctx context.Context, jobs *jobStore, jobID string, wait time.Duration) (string, bool) {
-	j, ok := jobs.get(jobID)
+// ChatStart starts one conversational turn with the peer agent as a
+// background job. sessionID continues an earlier conversation.
+func (s *Service) ChatStart(ctx context.Context, agentName, folder, message, sessionID string) (string, bool) {
+	b, err := ResolveAgent(agentName, clientName(ctx), s.Backends)
+	if err != nil {
+		return err.Error(), true
+	}
+	dir, err := s.Cfg.ResolveAllowedDir(folder)
+	if err != nil {
+		return err.Error(), true
+	}
+	if strings.TrimSpace(message) == "" {
+		return "message must not be empty", true
+	}
+	j, err := s.Jobs.add(dir, b.Name(), agent.KindChat, "")
+	if err != nil {
+		return err.Error(), true
+	}
+	s.Log.Info().Str("tool", "chat_start").Str("job", j.ID).Str("agent", b.Name()).Str("folder", dir).Bool("resume", sessionID != "").Msg("invocation")
+	go func() {
+		out, isErr := s.runChat(s.Jobs.ctx, b, dir, message, sessionID)
+		j.finish(out, isErr)
+	}()
+	cont := "a new conversation"
+	if sessionID != "" {
+		cont = "continuing session " + sessionID
+	}
+	return fmt.Sprintf(
+		"Chat turn started in the background (%s).\njob_id: %s\nagent: %s\nfolder: %s\n\nCall job_status with this job_id to get the reply; it includes the session_id to pass to the next chat_start.",
+		cont, j.ID, b.Name(), dir,
+	), false
+}
+
+// JobStatus reports on a background job, blocking up to wait for it to
+// finish (long-poll) so callers need fewer round trips.
+func (s *Service) JobStatus(ctx context.Context, jobID string, wait time.Duration) (string, bool) {
+	j, ok := s.Jobs.get(jobID)
 	if !ok {
-		return fmt.Sprintf("unknown job_id %q (finished jobs are kept for ~%s; start a new review with codex_review_start)", jobID, keepFinished), true
+		return fmt.Sprintf("unknown job_id %q (finished jobs are kept for ~%s; start a new job with review_start or chat_start)", jobID, keepFinished), true
 	}
 	select {
 	case <-j.done:
-		prefix := fmt.Sprintf("status: completed (job %s, elapsed %s)\n\n", j.ID, j.ended.Sub(j.Started).Round(time.Second))
+		prefix := fmt.Sprintf("status: completed (job %s, agent %s, kind %s, elapsed %s)\n\n", j.ID, j.Agent, j.Kind, j.ended.Sub(j.Started).Round(time.Second))
 		return prefix + j.output, j.isErr
 	case <-ctx.Done():
 		return "status check cancelled by client", true
 	case <-time.After(wait):
 		return fmt.Sprintf(
-			"status: running (job %s, elapsed %s)\nThe review is still in progress. Call codex_review_status again with the same job_id.",
-			j.ID, time.Since(j.Started).Round(time.Second),
+			"status: running (job %s, agent %s, kind %s, elapsed %s)\nStill in progress. Call job_status again with the same job_id.",
+			j.ID, j.Agent, j.Kind, time.Since(j.Started).Round(time.Second),
 		), false
 	}
 }
 
-func HandleCodexReview(ctx context.Context, cfg *config.Config, r codex.Runner, log zerolog.Logger, folder, mode, base, commit, prompt string) (string, bool) {
-	dir, err := cfg.ResolveAllowedDir(folder)
-	if err != nil {
-		return err.Error(), true
+func (s *Service) streamTo() io.Writer {
+	if s.Cfg.StreamEnabled() {
+		return os.Stderr
 	}
-	var streamTo io.Writer
-	if cfg.StreamEnabled() {
-		streamTo = os.Stderr
-	}
-	res, err := codex.Review(ctx, r, "codex", cfg.CodexExtraArgs, cfg.Timeout, cfg.MaxOutputBytes, streamTo, codex.ReviewParams{
-		Folder: dir,
-		Mode:   mode,
-		Base:   base,
-		Commit: commit,
-		Prompt: prompt,
-	})
-	if err != nil {
-		log.Info().Str("tool", "codex_review").Str("folder", dir).Str("mode", mode).Err(err).Msg("invocation")
-		return err.Error(), true
-	}
-	log.Info().Str("tool", "codex_review").Str("folder", dir).Str("mode", mode).Dur("elapsed", res.Elapsed).Int("exit", res.ExitCode).Err(err).Msg("invocation")
-	var b strings.Builder
-	fmt.Fprintf(&b, "Mode: %s (codex exit %d)\n\n--- Codex review ---\n%s\n", res.Mode, res.ExitCode, res.Output)
-	// codex's stderr is its verbose progress/exec trace; it is already streamed
-	// live to the desktop log (stream_output). Only surface it in the result when
-	// codex itself failed, as diagnostics.
-	if res.ExitCode != 0 && res.Stderr != "" {
-		fmt.Fprintf(&b, "\n--- codex stderr (exit %d) ---\n%s\n", res.ExitCode, res.Stderr)
-	}
-	if res.TimedOut {
-		fmt.Fprintf(&b, "\n[codex was killed after the server-side timeout of %s (config 'timeout'); the review is incomplete]\n", cfg.Timeout)
-	}
-	if res.Truncated {
-		b.WriteString("\n[output truncated]\n")
-	}
-	return b.String(), false
+	return nil
 }
 
-func HandleRunCommand(ctx context.Context, cfg *config.Config, r codex.Runner, log zerolog.Logger, command string, args []string, folder string) (string, bool) {
-	if !cfg.CommandAllowed(command) {
+// run executes the backend command with the server's timeout and caps.
+func (s *Service) run(ctx context.Context, b agent.Backend, dir string, args []string) (exec.Result, error) {
+	return s.Runner.Run(ctx, exec.Request{
+		Command: b.Command(), Args: args, Dir: dir,
+		Timeout: s.Cfg.Timeout, MaxOutputBytes: s.Cfg.MaxOutputBytes, StreamTo: s.streamTo(),
+	})
+}
+
+func notFoundHint(b agent.Backend, err error) string {
+	return fmt.Sprintf("%v (is %q installed and on PATH? set agents.%s.command in config.yaml to an absolute path)", err, b.Command(), b.Name())
+}
+
+func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, base, commit, prompt string) (string, bool) {
+	args, native, err := b.ReviewArgs(scope, base, commit, prompt)
+	if err != nil {
+		return err.Error(), true
+	}
+	if !native {
+		p, err := agent.ReviewPrompt(scope, base, commit, prompt)
+		if err != nil {
+			return err.Error(), true
+		}
+		args = b.ChatArgs(p, "")
+	}
+	res, err := s.run(ctx, b, dir, args)
+	if err != nil {
+		s.Log.Info().Str("tool", "review").Str("agent", b.Name()).Str("folder", dir).Err(err).Msg("invocation")
+		return notFoundHint(b, err), true
+	}
+	s.Log.Info().Str("tool", "review").Str("agent", b.Name()).Str("folder", dir).Dur("elapsed", res.Elapsed).Int("exit", res.ExitCode).Msg("invocation")
+
+	text := res.Stdout
+	if !native && res.ExitCode == 0 && !res.TimedOut {
+		reply, _, perr := b.ParseChat(res.Stdout)
+		if perr != nil {
+			return perr.Error() + "\n" + diagnostics(b, res, s.Cfg.Timeout), true
+		}
+		text = reply
+	}
+	label := scope
+	if label == "" {
+		label = "uncommitted"
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "Mode: %s (%s exit %d)\n\n--- %s review ---\n%s\n", label, b.Name(), res.ExitCode, agent.Label(b.Name()), text)
+	out.WriteString(diagnostics(b, res, s.Cfg.Timeout))
+	return out.String(), false
+}
+
+func (s *Service) runChat(ctx context.Context, b agent.Backend, dir, message, sessionID string) (string, bool) {
+	res, err := s.run(ctx, b, dir, b.ChatArgs(message, sessionID))
+	if err != nil {
+		s.Log.Info().Str("tool", "chat").Str("agent", b.Name()).Str("folder", dir).Err(err).Msg("invocation")
+		return notFoundHint(b, err), true
+	}
+	s.Log.Info().Str("tool", "chat").Str("agent", b.Name()).Str("folder", dir).Dur("elapsed", res.Elapsed).Int("exit", res.ExitCode).Msg("invocation")
+
+	reply, sid, perr := b.ParseChat(res.Stdout)
+	if perr != nil || res.ExitCode != 0 || res.TimedOut {
+		var out strings.Builder
+		fmt.Fprintf(&out, "%s chat failed (%s exit %d)", agent.Label(b.Name()), b.Name(), res.ExitCode)
+		if perr != nil {
+			fmt.Fprintf(&out, ": %v", perr)
+		}
+		out.WriteString("\n")
+		if sid != "" {
+			fmt.Fprintf(&out, "session_id: %s\n", sid)
+		}
+		out.WriteString(diagnostics(b, res, s.Cfg.Timeout))
+		return out.String(), true
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "session_id: %s\n\n--- %s reply ---\n%s\n", sid, agent.Label(b.Name()), reply)
+	out.WriteString(diagnostics(b, res, s.Cfg.Timeout))
+	return out.String(), false
+}
+
+// diagnostics appends stderr (only when the CLI failed — its stderr is a
+// verbose progress trace that is already streamed to the server log), plus
+// timeout and truncation markers.
+func diagnostics(b agent.Backend, res exec.Result, timeout time.Duration) string {
+	var out strings.Builder
+	if res.ExitCode != 0 && res.Stderr != "" {
+		fmt.Fprintf(&out, "\n--- %s stderr (exit %d) ---\n%s\n", b.Name(), res.ExitCode, res.Stderr)
+	}
+	if res.TimedOut {
+		fmt.Fprintf(&out, "\n[%s was killed after the server-side timeout of %s (config 'timeout'); the result is incomplete]\n", b.Name(), timeout)
+	}
+	if res.Truncated {
+		out.WriteString("\n[output truncated]\n")
+	}
+	return out.String()
+}
+
+// RunCommand runs an allowlisted argv in a host folder.
+func (s *Service) RunCommand(ctx context.Context, command string, args []string, folder string) (string, bool) {
+	if !s.Cfg.CommandAllowed(command) {
 		return fmt.Sprintf("command %q is not allowed", command), true
 	}
-	dir, err := cfg.ResolveAllowedDir(folder)
+	dir, err := s.Cfg.ResolveAllowedDir(folder)
 	if err != nil {
 		return err.Error(), true
 	}
-	var streamTo io.Writer
-	if cfg.StreamEnabled() {
-		streamTo = os.Stderr
-	}
-	res, err := r.Run(ctx, exec.Request{
-		Command: command, Args: args, Dir: dir, Timeout: cfg.Timeout, MaxOutputBytes: cfg.MaxOutputBytes,
-		StreamTo: streamTo,
+	res, err := s.Runner.Run(ctx, exec.Request{
+		Command: command, Args: args, Dir: dir, Timeout: s.Cfg.Timeout, MaxOutputBytes: s.Cfg.MaxOutputBytes,
+		StreamTo: s.streamTo(),
 	})
 	if err != nil {
-		log.Info().Str("tool", "run_command").Str("command", command).Str("folder", dir).Err(err).Msg("invocation")
+		s.Log.Info().Str("tool", "run_command").Str("command", command).Str("folder", dir).Err(err).Msg("invocation")
 		return err.Error(), true
 	}
-	log.Info().Str("tool", "run_command").Str("command", command).Str("folder", dir).Int("exit", res.ExitCode).Dur("elapsed", res.Elapsed).Err(err).Msg("invocation")
+	s.Log.Info().Str("tool", "run_command").Str("command", command).Str("folder", dir).Int("exit", res.ExitCode).Dur("elapsed", res.Elapsed).Msg("invocation")
 	var b strings.Builder
 	fmt.Fprintf(&b, "exit=%d elapsed=%s\n--- stdout ---\n%s\n--- stderr ---\n%s\n", res.ExitCode, res.Elapsed, res.Stdout, res.Stderr)
 	if res.TimedOut {

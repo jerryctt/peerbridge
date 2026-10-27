@@ -5,9 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jerryctt/hostrunner-mcp/internal/agent"
+	"github.com/jerryctt/hostrunner-mcp/internal/claude"
+	"github.com/jerryctt/hostrunner-mcp/internal/codex"
 	"github.com/jerryctt/hostrunner-mcp/internal/config"
 	"github.com/jerryctt/hostrunner-mcp/internal/exec"
 	"github.com/rs/zerolog"
@@ -20,6 +24,36 @@ func (f *fakeRunner) Run(_ context.Context, req exec.Request) (exec.Result, erro
 	return f.reply[key], nil
 }
 
+// recordingRunner returns one canned result and remembers every request.
+type recordingRunner struct {
+	mu    sync.Mutex
+	reply exec.Result
+	reqs  []exec.Request
+}
+
+func (r *recordingRunner) Run(_ context.Context, req exec.Request) (exec.Result, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reqs = append(r.reqs, req)
+	return r.reply, nil
+}
+
+func (r *recordingRunner) last() exec.Request {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reqs[len(r.reqs)-1]
+}
+
+// blockingRunner blocks until its context is cancelled, like a CLI process
+// that only dies when its process group is killed.
+type blockingRunner struct{ started chan struct{} }
+
+func (b *blockingRunner) Run(ctx context.Context, _ exec.Request) (exec.Result, error) {
+	close(b.started)
+	<-ctx.Done()
+	return exec.Result{TimedOut: true, ExitCode: -1}, nil
+}
+
 func newCfg(t *testing.T) (*config.Config, string) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -28,167 +62,36 @@ func newCfg(t *testing.T) (*config.Config, string) {
 	}
 	return &config.Config{
 		AllowedRoots:    []string{root},
-		AllowedCommands: []string{"codex", "git"},
-		CodexExtraArgs:  nil,
+		AllowedCommands: []string{"codex", "claude", "git"},
 		MaxOutputBytes:  1000,
 	}, repo
 }
 
-func TestHandleCodexReviewRejectsOutsideRoot(t *testing.T) {
-	cfg, _ := newCfg(t)
-	r := &fakeRunner{}
-	out, isErr := HandleCodexReview(context.Background(), cfg, r, zerolog.Nop(), "/etc", "uncommitted", "", "", "")
-	if !isErr || !strings.Contains(out, "allowed_root") {
-		t.Errorf("expected allowlist rejection, got %q isErr=%v", out, isErr)
-	}
-}
-
-func TestHandleRunCommandRejectsDisallowedCommand(t *testing.T) {
+func newSvc(t *testing.T, r agent.Runner) (*Service, string) {
 	cfg, repo := newCfg(t)
-	r := &fakeRunner{}
-	out, isErr := HandleRunCommand(context.Background(), cfg, r, zerolog.Nop(), "rm", []string{"-rf", "/"}, repo)
-	if !isErr || !strings.Contains(out, "not allowed") {
-		t.Errorf("expected command rejection, got %q isErr=%v", out, isErr)
-	}
+	return NewService(cfg, r, zerolog.Nop()), repo
 }
 
-func TestHandleRunCommandHappyPath(t *testing.T) {
-	cfg, repo := newCfg(t)
-	r := &fakeRunner{reply: map[string]exec.Result{"git status": {Stdout: "clean", ExitCode: 0}}}
-	out, isErr := HandleRunCommand(context.Background(), cfg, r, zerolog.Nop(), "git", []string{"status"}, repo)
-	if isErr || !strings.Contains(out, "clean") {
-		t.Errorf("expected success with output, got %q isErr=%v", out, isErr)
+func jobID(t *testing.T, out string) string {
+	t.Helper()
+	parts := strings.SplitAfter(out, "job_id: ")
+	if len(parts) < 2 {
+		t.Fatalf("output missing job_id: %q", out)
 	}
+	return strings.TrimSpace(strings.Split(parts[1], "\n")[0])
 }
 
-func TestHandleCodexReviewOmitsStderrOnSuccess(t *testing.T) {
-	cfg, repo := newCfg(t)
-	r := &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted": {Stdout: "VERDICT_OK", Stderr: "NOISE_TRACE", ExitCode: 0},
-	}}
-	out, isErr := HandleCodexReview(context.Background(), cfg, r, zerolog.Nop(), repo, "uncommitted", "", "", "")
-	if isErr {
-		t.Fatalf("expected success, got error: %q", out)
-	}
-	if !strings.Contains(out, "VERDICT_OK") {
-		t.Errorf("expected output to contain VERDICT_OK, got: %q", out)
-	}
-	if !strings.Contains(out, "codex exit 0") {
-		t.Errorf("expected output to contain 'codex exit 0', got: %q", out)
-	}
-	if strings.Contains(out, "NOISE_TRACE") {
-		t.Errorf("expected output to NOT contain NOISE_TRACE, got: %q", out)
-	}
-	if strings.Contains(out, "--- codex stderr") {
-		t.Errorf("expected output to NOT contain '--- codex stderr', got: %q", out)
-	}
-}
-
-func waitStatus(t *testing.T, jobs *jobStore, id string, wait time.Duration) (string, bool) {
+func waitStatus(t *testing.T, s *Service, id string) (string, bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		out, isErr := HandleReviewStatus(context.Background(), jobs, id, wait)
+		out, isErr := s.JobStatus(context.Background(), id, 50*time.Millisecond)
 		if isErr || !strings.Contains(out, "status: running") {
 			return out, isErr
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("job %s did not finish in time", id)
 		}
-	}
-}
-
-func TestReviewStartAndStatus(t *testing.T) {
-	cfg, repo := newCfg(t)
-	r := &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted": {Stdout: "VERDICT_OK", ExitCode: 0},
-	}}
-	jobs := newJobStore()
-
-	out, isErr := HandleReviewStart(cfg, r, zerolog.Nop(), jobs, repo, "uncommitted", "", "", "")
-	if isErr {
-		t.Fatalf("start: %q", out)
-	}
-	if !strings.Contains(out, "job_id: ") {
-		t.Fatalf("start output missing job_id: %q", out)
-	}
-	id := strings.TrimSpace(strings.Split(strings.SplitAfter(out, "job_id: ")[1], "\n")[0])
-
-	got, isErr := waitStatus(t, jobs, id, 100*time.Millisecond)
-	if isErr {
-		t.Fatalf("status: %q", got)
-	}
-	if !strings.Contains(got, "status: completed") || !strings.Contains(got, "VERDICT_OK") {
-		t.Errorf("status = %q, want completed with review output", got)
-	}
-
-	// Result stays retrievable after completion.
-	again, isErr := HandleReviewStatus(context.Background(), jobs, id, time.Millisecond)
-	if isErr || !strings.Contains(again, "VERDICT_OK") {
-		t.Errorf("re-fetch = %q isErr=%v, want cached result", again, isErr)
-	}
-}
-
-func TestReviewStartValidatesUpfront(t *testing.T) {
-	cfg, repo := newCfg(t)
-	jobs := newJobStore()
-
-	// Outside allowed roots.
-	out, isErr := HandleReviewStart(cfg, &fakeRunner{}, zerolog.Nop(), jobs, "/etc", "uncommitted", "", "", "")
-	if !isErr || !strings.Contains(out, "allowed_root") {
-		t.Errorf("expected allowlist rejection, got %q isErr=%v", out, isErr)
-	}
-
-	// Bad scope params fail immediately, not in the background job.
-	out, isErr = HandleReviewStart(cfg, &fakeRunner{}, zerolog.Nop(), jobs, repo, "base", "", "", "")
-	if !isErr || !strings.Contains(out, "base") {
-		t.Errorf("expected base validation error, got %q isErr=%v", out, isErr)
-	}
-}
-
-func TestReviewStartRejectsConcurrentJobForSameWorktree(t *testing.T) {
-	cfg, repo := newCfg(t)
-	// Make repo look like a git worktree with subdirectories.
-	for _, d := range []string{".git", "internal", "cmd"} {
-		if err := os.Mkdir(filepath.Join(repo, d), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	jobs := newJobStore()
-	// A job started from repo/internal that never finishes.
-	j, err := jobs.add(mustResolve(t, cfg, filepath.Join(repo, "internal")), "uncommitted")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Same folder, the repo root, and a sibling subdirectory are all the same
-	// worktree and must be rejected while the job is running.
-	for _, dir := range []string{filepath.Join(repo, "internal"), repo, filepath.Join(repo, "cmd")} {
-		out, isErr := HandleReviewStart(cfg, &fakeRunner{}, zerolog.Nop(), jobs, dir, "uncommitted", "", "", "")
-		if !isErr || !strings.Contains(out, "already running") || !strings.Contains(out, j.ID) {
-			t.Errorf("dir %s: expected duplicate-job rejection mentioning %s, got %q isErr=%v", dir, j.ID, out, isErr)
-		}
-	}
-
-	// Once finished, a new review for the same worktree is allowed.
-	j.finish("done", false)
-	out, isErr := HandleReviewStart(cfg, &fakeRunner{}, zerolog.Nop(), jobs, repo, "uncommitted", "", "", "")
-	if isErr {
-		t.Errorf("expected new job after previous finished, got %q", out)
-	}
-}
-
-func TestJobStoreExpiresFinishedJobsOnGet(t *testing.T) {
-	jobs := newJobStore()
-	j, err := jobs.add("/repo", "uncommitted")
-	if err != nil {
-		t.Fatal(err)
-	}
-	j.finish("done", false)
-	j.ended = time.Now().Add(-keepFinished - time.Minute)
-
-	if _, ok := jobs.get(j.ID); ok {
-		t.Errorf("job older than keepFinished should be expired on get")
 	}
 }
 
@@ -201,29 +104,221 @@ func mustResolve(t *testing.T, cfg *config.Config, dir string) string {
 	return resolved
 }
 
-// blockingRunner blocks until its context is cancelled, like a codex process
-// that only dies when its process group is killed.
-type blockingRunner struct{ started chan struct{} }
+const claudeJSON = `{"type":"result","subtype":"success","is_error":false,"result":"CLAUDE_SAYS","session_id":"sess-42"}`
+const codexJSONL = "{\"type\":\"thread.started\",\"thread_id\":\"thr-7\"}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"CODEX_SAYS\"}}\n"
 
-func (b *blockingRunner) Run(ctx context.Context, _ exec.Request) (exec.Result, error) {
-	close(b.started)
-	<-ctx.Done()
-	return exec.Result{TimedOut: true, ExitCode: -1}, nil
+func TestResolveAgent(t *testing.T) {
+	reg := agent.Registry{"codex": codex.New(agent.Settings{Command: "codex"}), "claude": claude.New(agent.Settings{Command: "claude"})}
+	if b, err := ResolveAgent("claude", "codex-cli", reg); err != nil || b.Name() != "claude" {
+		t.Errorf("explicit wins: %v %v", b, err)
+	}
+	if b, err := ResolveAgent("", "claude-ai", reg); err != nil || b.Name() != "codex" {
+		t.Errorf("claude client -> codex: %v %v", b, err)
+	}
+	if b, err := ResolveAgent("", "Codex Desktop", reg); err != nil || b.Name() != "claude" {
+		t.Errorf("codex client -> claude: %v %v", b, err)
+	}
+	if _, err := ResolveAgent("", "mcp-inspector", reg); err == nil || !strings.Contains(err.Error(), "specify agent") {
+		t.Errorf("unknown client must ask for explicit agent, got %v", err)
+	}
+	if _, err := ResolveAgent("gemini", "claude-ai", reg); err == nil || !strings.Contains(err.Error(), "valid agents") {
+		t.Errorf("unknown agent error: %v", err)
+	}
 }
 
-func TestJobStoreShutdownCancelsRunningJobs(t *testing.T) {
-	cfg, repo := newCfg(t)
-	jobs := newJobStore()
-	r := &blockingRunner{started: make(chan struct{})}
-
-	out, isErr := HandleReviewStart(cfg, r, zerolog.Nop(), jobs, repo, "uncommitted", "", "", "")
+func TestReviewStartCodexNative(t *testing.T) {
+	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
+		"codex review --uncommitted": {Stdout: "VERDICT_OK", Stderr: "NOISE_TRACE", ExitCode: 0},
+	}})
+	out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "")
 	if isErr {
 		t.Fatalf("start: %q", out)
 	}
-	<-r.started
+	got, isErr := waitStatus(t, s, jobID(t, out))
+	if isErr {
+		t.Fatalf("status: %q", got)
+	}
+	for _, want := range []string{"status: completed", "agent codex", "kind review", "Mode: uncommitted (codex exit 0)", "--- Codex review ---", "VERDICT_OK"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "NOISE_TRACE") {
+		t.Errorf("stderr must be hidden on success: %q", got)
+	}
+	// Result stays retrievable after completion.
+	again, isErr := s.JobStatus(context.Background(), jobID(t, out), time.Millisecond)
+	if isErr || !strings.Contains(again, "VERDICT_OK") {
+		t.Errorf("re-fetch = %q isErr=%v, want cached result", again, isErr)
+	}
+}
 
+func TestReviewStartCodexFailureIncludesStderr(t *testing.T) {
+	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
+		"codex review --uncommitted": {Stdout: "partial", Stderr: "BOOM", ExitCode: 2},
+	}})
+	out, _ := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "")
+	got, isErr := waitStatus(t, s, jobID(t, out))
+	if isErr {
+		t.Fatalf("expected non-error tool result, got error: %q", got)
+	}
+	if !strings.Contains(got, "BOOM") || !strings.Contains(got, "codex exit 2") {
+		t.Errorf("want stderr and exit code, got %q", got)
+	}
+}
+
+func TestReviewStartClaudeViaPrompt(t *testing.T) {
+	r := &recordingRunner{reply: exec.Result{Stdout: claudeJSON}}
+	s, repo := newSvc(t, r)
+	out, isErr := s.ReviewStart(context.Background(), "claude", repo, "base", "main", "", "check auth")
+	if isErr {
+		t.Fatalf("start: %q", out)
+	}
+	got, isErr := waitStatus(t, s, jobID(t, out))
+	if isErr {
+		t.Fatalf("status: %q", got)
+	}
+	if !strings.Contains(got, "--- Claude review ---") || !strings.Contains(got, "CLAUDE_SAYS") || !strings.Contains(got, "Mode: base (claude exit 0)") {
+		t.Errorf("got %q", got)
+	}
+	req := r.last()
+	if req.Command != "claude" || req.Args[0] != "-p" {
+		t.Errorf("claude invocation = %v", req)
+	}
+	if !strings.Contains(req.Args[1], "base branch main") || !strings.Contains(req.Args[1], "check auth") {
+		t.Errorf("review prompt = %q", req.Args[1])
+	}
+}
+
+func TestChatStartNewAndResume(t *testing.T) {
+	r := &recordingRunner{reply: exec.Result{Stdout: codexJSONL}}
+	s, repo := newSvc(t, r)
+	out, isErr := s.ChatStart(context.Background(), "codex", repo, "hello", "")
+	if isErr {
+		t.Fatalf("start: %q", out)
+	}
+	got, isErr := waitStatus(t, s, jobID(t, out))
+	if isErr {
+		t.Fatalf("status: %q", got)
+	}
+	for _, want := range []string{"kind chat", "session_id: thr-7", "--- Codex reply ---", "CODEX_SAYS"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if a := strings.Join(r.last().Args, " "); !strings.HasPrefix(a, "exec --json --sandbox read-only") || !strings.HasSuffix(a, " hello") {
+		t.Errorf("new-session args = %q", a)
+	}
+
+	out, isErr = s.ChatStart(context.Background(), "codex", repo, "more", "thr-7")
+	if isErr {
+		t.Fatalf("resume start: %q", out)
+	}
+	if _, isErr = waitStatus(t, s, jobID(t, out)); isErr {
+		t.Fatal("resume failed")
+	}
+	if a := strings.Join(r.last().Args, " "); !strings.HasPrefix(a, "exec resume --json") || !strings.HasSuffix(a, " thr-7 more") {
+		t.Errorf("resume args = %q", a)
+	}
+}
+
+func TestChatParseFailureIsJobError(t *testing.T) {
+	s, repo := newSvc(t, &recordingRunner{reply: exec.Result{Stdout: "garbage", Stderr: "BOOM", ExitCode: 1}})
+	out, _ := s.ChatStart(context.Background(), "claude", repo, "hi", "")
+	got, isErr := waitStatus(t, s, jobID(t, out))
+	if !isErr || !strings.Contains(got, "BOOM") || !strings.Contains(got, "claude exit 1") {
+		t.Errorf("want error with stderr and exit code, got %q isErr=%v", got, isErr)
+	}
+}
+
+func TestStartValidatesUpfront(t *testing.T) {
+	s, repo := newSvc(t, &fakeRunner{})
+	if out, isErr := s.ReviewStart(context.Background(), "codex", "/etc", "uncommitted", "", "", ""); !isErr || !strings.Contains(out, "allowed_root") {
+		t.Errorf("outside root: %q %v", out, isErr)
+	}
+	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "base", "", "", ""); !isErr || !strings.Contains(out, "base") {
+		t.Errorf("bad scope: %q %v", out, isErr)
+	}
+	if out, isErr := s.ReviewStart(context.Background(), "claude", repo, "commit", "", "", ""); !isErr || !strings.Contains(out, "commit") {
+		t.Errorf("bad scope claude: %q %v", out, isErr)
+	}
+	if out, isErr := s.ChatStart(context.Background(), "codex", repo, "   ", ""); !isErr || !strings.Contains(out, "message") {
+		t.Errorf("empty message: %q %v", out, isErr)
+	}
+	if out, isErr := s.ChatStart(context.Background(), "", repo, "hi", ""); !isErr || !strings.Contains(out, "specify agent") {
+		t.Errorf("no client info and no agent: %q %v", out, isErr)
+	}
+}
+
+func TestReviewStartRejectsConcurrentJobForSameWorktree(t *testing.T) {
+	s, repo := newSvc(t, &fakeRunner{})
+	// Make repo look like a git worktree with subdirectories.
+	for _, d := range []string{".git", "internal", "cmd"} {
+		if err := os.Mkdir(filepath.Join(repo, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A job started from repo/internal that never finishes.
+	j, err := s.Jobs.add(mustResolve(t, s.Cfg, filepath.Join(repo, "internal")), "codex", agent.KindReview, "uncommitted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same folder, the repo root, and a sibling subdirectory are all the same
+	// worktree and must be rejected while the job is running.
+	for _, dir := range []string{filepath.Join(repo, "internal"), repo, filepath.Join(repo, "cmd")} {
+		out, isErr := s.ReviewStart(context.Background(), "codex", dir, "uncommitted", "", "", "")
+		if !isErr || !strings.Contains(out, "already running") || !strings.Contains(out, j.ID) {
+			t.Errorf("dir %s: expected duplicate-job rejection mentioning %s, got %q isErr=%v", dir, j.ID, out, isErr)
+		}
+	}
+	// Once finished, a new review for the same worktree is allowed.
+	j.finish("done", false)
+	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", ""); isErr {
+		t.Errorf("expected new job after previous finished, got %q", out)
+	}
+}
+
+func TestJobStoreDuplicateKeyIsRootAgentKind(t *testing.T) {
+	jobs := newJobStore()
+	if _, err := jobs.add("/repo", "codex", agent.KindReview, "uncommitted"); err != nil {
+		t.Fatal(err)
+	}
+	// Same root+agent+kind -> refused.
+	if _, err := jobs.add("/repo", "codex", agent.KindReview, "base"); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Errorf("duplicate codex review should be refused, got %v", err)
+	}
+	// Different agent or kind on the same root -> allowed.
+	if _, err := jobs.add("/repo", "claude", agent.KindReview, "uncommitted"); err != nil {
+		t.Errorf("claude review alongside codex review should be allowed: %v", err)
+	}
+	if _, err := jobs.add("/repo", "codex", agent.KindChat, ""); err != nil {
+		t.Errorf("codex chat alongside codex review should be allowed: %v", err)
+	}
+}
+
+func TestJobStoreExpiresFinishedJobsOnGet(t *testing.T) {
+	jobs := newJobStore()
+	j, err := jobs.add("/repo", "codex", agent.KindReview, "uncommitted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.finish("done", false)
+	j.ended = time.Now().Add(-keepFinished - time.Minute)
+
+	if _, ok := jobs.get(j.ID); ok {
+		t.Errorf("job older than keepFinished should be expired on get")
+	}
+}
+
+func TestJobStoreShutdownCancelsRunningJobs(t *testing.T) {
+	r := &blockingRunner{started: make(chan struct{})}
+	s, repo := newSvc(t, r)
+	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", ""); isErr {
+		t.Fatalf("start: %q", out)
+	}
+	<-r.started
 	done := make(chan struct{})
-	go func() { jobs.shutdown(2 * time.Second); close(done) }()
+	go func() { s.Jobs.shutdown(2 * time.Second); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -231,26 +326,20 @@ func TestJobStoreShutdownCancelsRunningJobs(t *testing.T) {
 	}
 }
 
-func TestReviewStatusUnknownJob(t *testing.T) {
-	out, isErr := HandleReviewStatus(context.Background(), newJobStore(), "nope", time.Millisecond)
+func TestJobStatusUnknownJob(t *testing.T) {
+	s, _ := newSvc(t, &fakeRunner{})
+	out, isErr := s.JobStatus(context.Background(), "nope", time.Millisecond)
 	if !isErr || !strings.Contains(out, "unknown job_id") {
 		t.Errorf("expected unknown job error, got %q isErr=%v", out, isErr)
 	}
 }
 
-func TestHandleCodexReviewIncludesStderrOnFailure(t *testing.T) {
-	cfg, repo := newCfg(t)
-	r := &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted": {Stdout: "partial", Stderr: "BOOM", ExitCode: 2},
-	}}
-	out, isErr := HandleCodexReview(context.Background(), cfg, r, zerolog.Nop(), repo, "uncommitted", "", "", "")
-	if isErr {
-		t.Fatalf("expected success (non-error tool result), got error: %q", out)
+func TestRunCommand(t *testing.T) {
+	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{"git status": {Stdout: "clean"}}})
+	if out, isErr := s.RunCommand(context.Background(), "rm", []string{"-rf", "/"}, repo); !isErr || !strings.Contains(out, "not allowed") {
+		t.Errorf("expected command rejection, got %q isErr=%v", out, isErr)
 	}
-	if !strings.Contains(out, "BOOM") {
-		t.Errorf("expected output to contain BOOM, got: %q", out)
-	}
-	if !strings.Contains(out, "codex exit 2") {
-		t.Errorf("expected output to contain 'codex exit 2', got: %q", out)
+	if out, isErr := s.RunCommand(context.Background(), "git", []string{"status"}, repo); isErr || !strings.Contains(out, "clean") {
+		t.Errorf("expected success, got %q isErr=%v", out, isErr)
 	}
 }

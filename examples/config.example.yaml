@@ -2,13 +2,27 @@ allowed_roots:
   - /Users/you/code
 allowed_commands:
   - codex
-  # add more commands here as needed (e.g. git, gemini) for use with run_command
-# Max wall-clock time for one host command (the codex review itself, or one
+  - claude
+  - git
+# Max wall-clock time for one host command (a review, one chat turn, or one
 # run_command). Needs a unit (600s, 10m) — a bare number is rejected.
-# NOTE: this file is read once at server startup; restart Claude Desktop after
-# editing. The effective values are logged as "config loaded" in
-# ~/Library/Logs/Claude/mcp-server-hostrunner.log.
+# NOTE: this file is read once at server startup; restart Claude Desktop /
+# the Codex app after editing. The effective values are logged as
+# "config loaded" (Claude: ~/Library/Logs/Claude/mcp-server-hostrunner.log).
 timeout: 600s
 max_output_bytes: 200000
-# codex_extra_args: ["-c", "model=o3"]   # optional extra codex flags (e.g. config overrides)
-stream_output: false   # tee codex output to the server log (mcp-server-hostrunner.log); set false to silence
+stream_output: false   # tee peer CLI output to the server log
+
+# Peer agents. Both are optional; defaults shown. macOS GUI apps do not
+# inherit your shell PATH, so use absolute paths if a CLI is not found
+# (e.g. the output of `which claude`).
+agents:
+  codex:
+    command: codex
+    extra_args: []              # e.g. ["-c", "model=o3"]
+    mcp_server_name: hostrunner # [mcp_servers.<name>] entry disabled inside the codex peer (recursion guard)
+  claude:
+    command: claude
+    extra_args: []              # e.g. ["--model", "opus"]
+# legacy, still honoured and appended to agents.codex.extra_args:
+# codex_extra_args: ["-c", "model=o3"]

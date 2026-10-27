@@ -112,3 +112,56 @@ func TestResolvePath(t *testing.T) {
 		}
 	})
 }
+
+func TestAgentsDefaults(t *testing.T) {
+	root := t.TempDir()
+	p := writeTemp(t, "allowed_roots:\n  - "+root+"\n")
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Agent("codex"); got.Command != "codex" || got.MCPServerName != "hostrunner" {
+		t.Errorf("codex defaults = %+v", got)
+	}
+	if got := c.Agent("claude"); got.Command != "claude" {
+		t.Errorf("claude defaults = %+v", got)
+	}
+}
+
+func TestAgentsOverrideAndLegacyMerge(t *testing.T) {
+	root := t.TempDir()
+	p := writeTemp(t, "allowed_roots:\n  - "+root+"\n"+
+		"codex_extra_args: [\"-c\", \"model=o3\"]\n"+
+		"agents:\n"+
+		"  codex:\n    command: /opt/homebrew/bin/codex\n    mcp_server_name: hr\n"+
+		"  claude:\n    command: /usr/local/bin/claude\n    extra_args: [\"--model\", \"opus\"]\n")
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cx := c.Agent("codex")
+	if cx.Command != "/opt/homebrew/bin/codex" || cx.MCPServerName != "hr" {
+		t.Errorf("codex override = %+v", cx)
+	}
+	if strings.Join(cx.ExtraArgs, " ") != "-c model=o3" {
+		t.Errorf("legacy codex_extra_args not merged: %v", cx.ExtraArgs)
+	}
+	cl := c.Agent("claude")
+	if cl.Command != "/usr/local/bin/claude" || strings.Join(cl.ExtraArgs, " ") != "--model opus" {
+		t.Errorf("claude override = %+v", cl)
+	}
+}
+
+func TestAgentsLegacyDoesNotDuplicate(t *testing.T) {
+	root := t.TempDir()
+	p := writeTemp(t, "allowed_roots:\n  - "+root+"\n"+
+		"codex_extra_args: [\"-c\", \"a=1\"]\n"+
+		"agents:\n  codex:\n    extra_args: [\"-c\", \"b=2\"]\n")
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(c.Agent("codex").ExtraArgs, " "); got != "-c b=2 -c a=1" {
+		t.Errorf("merge order = %q, want agents first then legacy", got)
+	}
+}

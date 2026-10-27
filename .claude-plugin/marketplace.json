@@ -1,11 +1,13 @@
 {
   "name": "hostrunner-marketplace",
-  "owner": { "name": "Jerry Chan" },
+  "owner": {
+    "name": "Jerry Chan"
+  },
   "plugins": [
     {
       "name": "hostrunner",
       "source": "./",
-      "description": "Local MCP server + Claude plugin for read-only Codex code reviews on your machine — an edit → review → edit loop, bridging the Claude sandbox to your host codex CLI."
+      "description": "Local MCP server + plugin for Claude and Codex: let either agent ask the other for a read-only code review or a multi-turn discussion on your machine, bridging sandboxes to your host codex / claude CLIs."
     }
   ]
 }

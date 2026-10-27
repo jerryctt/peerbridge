@@ -5,135 +5,156 @@
 [![CI](https://github.com/jerryctt/hostrunner-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/jerryctt/hostrunner-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-本機 MCP 伺服器 + Claude plugin,在你的機器上執行唯讀的 Codex 程式碼審查 —— 把 Claude 沙箱橋接到 Host 的 codex CLI,達成邊改邊審的迴圈。
+給 **Claude** 與 **Codex** 共用的本機 MCP server + plugin：在任一邊的 app 裡，都能請*另一家*的 agent 對你的程式碼做唯讀 code review，或進行多輪討論——全部在你自己的機器上、用你自己的 CLI 登入執行。
 
 ---
 
-## 目的與動機
+## 目的 / 為什麼
 
-[Claude Cowork](https://claude.ai) 在隔離的沙箱中編輯程式碼。該沙箱無法執行 Host 機器上的 `codex` CLI（沙箱中未安裝 `codex`，也無法存取您的授權憑證或本地檔案）。**hostrunner-mcp** 解決了這個問題：
+Coding agent 各自活在自己的 app 裡。[Claude](https://claude.ai)（Desktop / Cowork / Code）在沙箱裡改程式，沙箱跑不了主機上的 `codex` CLI；Codex app 也沒辦法問 Claude 任何事。但「讓另一個模型看一眼」是抓 bug 與盲點最便宜的方法之一。
 
-- 它以**原生行程**在您的 Mac 或 Linux 機器上執行，由 Claude Desktop 透過 stdio 啟動。
-- 它完整存取 Host 檔案系統、`codex` 執行檔以及您的授權憑證。
-- Cowork 編輯您分享到 Session 的資料夾中的檔案，再呼叫伺服器的工具，觸發 Host 端的唯讀 `codex review` 審查，並將結果傳回 Cowork。
-- 這讓您無需離開 Cowork 即可完成緊湊的**編輯 → 審查 → 編輯**迴圈。
+**hostrunner-mcp** 雙向補上這個缺口：
+
+- 以**原生程序**在你的 Mac 或 Linux 上執行，由 Claude Desktop/Code **或** Codex（CLI、macOS app、IDE extension）透過 stdio 啟動。
+- 看得到主機檔案系統、`codex` 與 `claude` 二進位檔，以及它們既有的登入狀態。
+- GUI 裡的 agent 負責改檔；hostrunner 讓它呼叫 **peer** agent（Claude 裡叫 `codex`、Codex 裡叫 `claude`）來 **review** 變更，或就一個設計**討論**好幾輪——永遠唯讀。
+- 得到緊湊的 **編輯 → peer review → 編輯** 循環，或兩個模型之間的**辯論**，不用離開編輯器。
 
 ---
 
-## 運作原理
+## 運作方式
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Claude Cowork（沙箱）                                  │
-│                                                         │
-│  ┌────────────┐   編輯檔案   ┌──────────────────┐      │
-│  │  AI 代理   │ ────────────►│   掛載資料夾     │      │
-│  │  (Cowork)  │              │  /sessions/…/mnt │      │
-│  └─────┬──────┘              └────────┬─────────┘      │
-│        │  MCP 工具呼叫                │                 │
-│        │  codex_review_start(folder=…) │               │
-└────────┼─────────────────────────────┼─────────────────┘
-         │ stdio（MCP 協定）            │ Host FS 掛載
-         ▼                             ▼
-┌─────────────────────────────────────────────────────────┐
-│  HOST 機器                                              │
-│                                                         │
-│  ┌──────────────────┐  codex review  ┌──────────────┐  │
-│  │  hostrunner-mcp  │ ──────────────►│  git 儲存庫  │  │
-│  │  （原生行程）    │                │ /Users/…/proj│  │
-│  │                  │                │  codex CLI   │  │
-│  └──────────────────┘                └──────────────┘  │
-│        由 Claude Desktop 啟動                           │
-└─────────────────────────────────────────────────────────┘
+┌────────────────────────────┐        ┌────────────────────────────┐
+│  Claude Desktop / Code     │        │  Codex app / CLI / IDE     │
+│  （agent 改檔）             │        │  （agent 改檔）             │
+│   review_start / chat_start│        │   review_start / chat_start│
+└──────────────┬─────────────┘        └──────────────┬─────────────┘
+               │ stdio (MCP)                         │ stdio (MCP)
+               ▼                                     ▼
+┌───────────────────────────────────────────────────────────────────┐
+│  主機 — hostrunner（原生程序，單一 binary）                          │
+│                                                                   │
+│  peer = 另一家的 agent（依 MCP client 名稱自動推斷）                 │
+│                                                                   │
+│   agent=codex  → codex review …  /  codex exec --sandbox read-only│
+│   agent=claude → claude -p --bare --permission-mode dontAsk …     │
+│                         ▼                                         │
+│                 git repo  /Users/…/proj   （peer 只能讀）           │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 功能特色
+## 功能
 
-- **`codex_review_start` / `codex_review_status`** — 對未提交的變更、base 分支差異或特定 commit，以 Host 上的**背景工作（background job）**執行唯讀的 `codex review`。`codex` 自行計算差異，本端不需處理 git。採用 job 模式是因為 Claude Desktop 會在約 180 秒後強制中斷單次 MCP 工具呼叫，而實際審查常常超過這個時間；啟動與輪詢都是快速呼叫，審查本身則可跑滿您設定的 `timeout`。
-- **`run_command`** — 在 Host 資料夾中以 argv 陣列執行任何白名單 CLI（例如 `git`、`codex`），從不使用 shell。
-- **嚴格安全性** — 指令名稱白名單、根目錄範圍限制、符號連結解析路徑檢查、絕不使用 shell。
-- **高度可設定** — 允許的根目錄、允許的指令、逾時時間、輸出大小上限，以及選用的 codex 額外旗標。
-- **稽核日誌** — 每次工具呼叫均透過 zerolog 記錄至 stderr。
-- **可擴充** — 只需在設定檔中加入白名單，即可新增其他 CLI（例如 `gemini`）。
+- **`review_start` / `job_status`** — 由 peer agent 對 uncommitted 變更、base branch diff 或某個 commit 做唯讀 review：`codex` 跑 `codex review`；`claude` 用 review prompt 跑 `claude -p`。Review 以**背景 job** 執行，因為它常超過 MCP 單次呼叫的時限（Claude Desktop 約 180 秒、Codex 的 `tool_timeout_sec`）；start/status 都很快回，review 本身可以跑到你設定的 `timeout`。
+- **`chat_start` / `job_status`** — 送一則訊息給可以讀 repo 的 peer；結果帶 `session_id`，可續接同一段對話（`claude -p --resume`、`codex exec resume`）。回合由 GUI 裡的 agent 驅動。
+- **自動選 peer** — 不帶 `agent` 時，Claude client 會找 codex、Codex client 會找 claude；要指定就傳 `agent`。
+- **唯讀 peer** — claude 以 `--bare --permission-mode dontAsk --tools Read,Grep,Glob,Bash --allowedTools <唯讀 git> --disallowedTools Edit,Write,NotebookEdit` 執行；codex chat 以 `--sandbox read-only` 執行。`--bare`（claude）與 `mcp_servers.<name>.enabled=false`（codex）防止 peer 遞迴呼叫 hostrunner。
+- **`codex_review_start` / `codex_review_status`** — 已棄用的別名，等同 `review_start(agent=codex)` / `job_status`；既有安裝照常可用。
+- **`run_command`** — 在主機資料夾內以 argv 陣列（絕不經過 shell）執行任何允許清單中的 CLI（例如 `git`）。
+- **嚴格安全** — 根目錄限制、符號連結解析後的路徑檢查、peer 的 argv 固定且唯讀、`run_command` 的指令允許清單、絕不使用 shell。
+- **可設定** — 允許的根目錄、允許的指令、timeout、輸出上限、各 agent 的指令路徑與額外旗標。
+- **審計日誌** — 每次工具呼叫都透過 zerolog 寫到 stderr。
 
 ---
 
-## 系統需求
+## 需求
 
-| 需求項目 | 說明 |
+| 需求 | 說明 |
 |---|---|
-| **codex CLI** | 必須在 Host 上安裝並完成授權（`codex` 在 `$PATH` 中） |
-| **Claude Desktop** | 用於註冊並啟動 MCP 伺服器 |
-| **Go 1.25+** | 僅在從原始碼建構時需要；下載預建執行檔則無需安裝 Go |
+| **codex CLI** | `agent=codex` 需要——主機上已安裝並登入 |
+| **claude CLI** | `agent=claude` 需要——主機上已安裝並登入（隨 Claude Code 提供） |
+| **Claude Desktop / Claude Code** *或* **Codex app / CLI** | 任一方負責註冊並啟動 MCP server（兩邊都可以） |
+| **Go 1.25+** | 僅從原始碼建置時需要；預建 release 不需要 Go |
 
 ---
 
-## 安裝方式
+## 安裝
 
-### 方式一：使用 `go install`（若已安裝 Go，建議此方式）
+### 方式 1：`go install`（有 Go 的話建議）
 
 ```bash
 go install github.com/jerryctt/hostrunner-mcp/cmd/hostrunner@latest
 ```
 
-執行檔將放置於 `$GOPATH/bin/hostrunner`（通常為 `~/go/bin/hostrunner`）。
+二進位檔會放在 `$GOPATH/bin/hostrunner`（通常是 `~/go/bin/hostrunner`）。
 
-### 方式二：下載發行版執行檔
+### 方式 2：下載 release 二進位檔
 
-從 [Releases 頁面](https://github.com/jerryctt/hostrunner-mcp/releases)下載適合您平台的預建執行檔，解壓後將 `hostrunner` 放入 `$PATH` 中（例如 `/usr/local/bin/hostrunner`）。
+從 [Releases 頁面](https://github.com/jerryctt/hostrunner-mcp/releases)下載對應平台的預建檔，解壓後把 `hostrunner` 放進 `$PATH`（例如 `/usr/local/bin/hostrunner`）。
 
-### 方式三：從原始碼建構
+### 方式 3：從原始碼建置
 
 ```bash
 git clone https://github.com/jerryctt/hostrunner-mcp.git
 cd hostrunner-mcp
-make build          # 產出 ./hostrunner
+make build          # 產生 ./hostrunner
 ```
 
-### 方式四：以 Claude 外掛程式安裝（Marketplace）
+### 方式 4：以 Claude plugin 安裝（marketplace）
 
-**在 Claude Desktop 中：** 前往「新增 Marketplace」→ 輸入 `jerryctt/hostrunner-mcp`，再安裝 **hostrunner** 外掛程式。
+**Claude Desktop：** Add marketplace → 輸入 `jerryctt/hostrunner-mcp`，安裝 **hostrunner** plugin。
 
-**在 Claude Code 中：**
+**Claude Code：**
 ```
 /plugin marketplace add jerryctt/hostrunner-mcp
 ```
-從清單中安裝 `hostrunner` 外掛程式。
+然後從清單安裝 `hostrunner` plugin。
 
-透過 Marketplace 安裝，可一次完成 MCP 伺服器（由隨附啟動程式自動啟動）與 `codex-loop` 技能的安裝。
+透過 marketplace 安裝會一次裝好 MCP server（由內附 launcher 自動啟動）以及 `peer-review`、`peer-chat`、`codex-loop` 三個 skill。
 
-**前置條件 — 建立設定檔：** 伺服器預設從 `~/.config/hostrunner/config.yaml` 讀取設定。請在啟動 Claude Desktop/Code 前依照 `examples/config.example.yaml` 建立設定檔：
+**前置：建立設定檔。** server 預設讀 `~/.config/hostrunner/config.yaml`。啟動 Claude Desktop/Code 前先從 `examples/config.example.yaml` 建立：
 
 ```bash
 mkdir -p ~/.config/hostrunner
 cp examples/config.example.yaml ~/.config/hostrunner/config.yaml
-# 編輯檔案，填入您自己的路徑
+# 依你的路徑修改
 ```
 
-您也可以透過 `-config` 旗標或 `HOSTRUNNER_CONFIG` 環境變數來覆寫設定檔路徑。
+可用 `-config` 旗標或 `HOSTRUNNER_CONFIG` 環境變數覆寫設定檔路徑。
 
-> **macOS GUI 應用程式與環境變數：** macOS 不會將 Shell 的環境變數傳遞給 GUI 應用程式（如 Claude Desktop），因此在 `.zshrc` 或 `.bashrc` 中設定的 `HOSTRUNNER_CONFIG` 對從 Claude Desktop 啟動的外掛程式無效。請將設定檔放在預設路徑 `~/.config/hostrunner/config.yaml`，伺服器無需任何環境變數即可找到它。
+> **macOS GUI app 與環境變數：** macOS 不會把 shell 環境變數傳給 Claude Desktop 或 Codex app 這類 GUI，所以在 shell profile 設 `HOSTRUNNER_CONFIG`（或 `PATH`）對 GUI 啟動的 server 無效。請把設定檔放在預設路徑；若找不到 `codex`/`claude`，把 `agents.<name>.command` 設成絕對路徑。
 
-**macOS/Linux：** 隨附的 `scripts/launch.sh` 啟動程式會在首次執行時下載符合目前作業系統與架構的發行版執行檔，並在執行前對照發行版的 `checksums.txt` 進行校驗碼驗證。無需手動安裝執行檔。
+**macOS/Linux：** 內附的 `scripts/launch.sh` 第一次執行時會下載對應平台的 release 二進位檔，並以 release 的 `checksums.txt` 驗證後才執行。不需手動安裝。
 
-**Windows：** 啟動程式不支援 Windows。請手動安裝執行檔（方式二），並依「向 Claude Desktop 註冊」章節所述，透過 `claude_desktop_config.json` 進行設定。
+**Windows：** launcher 不支援 Windows。請手動安裝（方式 2）並依「註冊到 Claude Desktop」一節設定 `claude_desktop_config.json`。
 
-> **信任說明：** 啟動程式會從 GitHub Releases 下載並執行執行檔，並以發行版的校驗碼進行驗證。若有疑慮，請檢閱 `scripts/launch.sh` 的原始碼。
+> **信任提醒：** launcher 會從 GitHub Releases 下載並執行二進位檔（經 checksum 驗證）。有疑慮請檢視 `scripts/launch.sh` 與 `scripts/lib.sh`。
+
+### 安裝到 Codex（CLI、macOS app、IDE extension）
+
+```bash
+git clone https://github.com/jerryctt/hostrunner-mcp.git
+cd hostrunner-mcp
+scripts/install-codex.sh            # 或：scripts/install-codex.sh --local ./hostrunner
+```
+
+這個腳本會下載並驗證 release 二進位檔（連結到 `~/.local/bin/hostrunner`）、在 `~/.codex/config.toml` 寫入 `[mcp_servers.hostrunner]` 區塊（含 `tool_timeout_sec = 120`）、把 `peer-review` 與 `peer-chat` skill 裝進 `~/.agents/skills/`，並在不存在時建立 `~/.config/hostrunner/config.yaml`。改好 `allowed_roots` 後重啟 Codex app（CLI、macOS app、IDE extension 共用這份設定）。在 Codex 裡說「peer review my changes」或「ask claude what it thinks about this design」即可。
+
+手動等效設定：
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.hostrunner]
+command = "/Users/you/.local/bin/hostrunner"
+tool_timeout_sec = 120
+startup_timeout_sec = 20
+```
 
 ---
 
 ## 設定
 
-伺服器依以下順序解析設定檔路徑：
-1. 若提供了 `-config` 旗標，優先使用其指定的路徑。
-2. 若設定了 `HOSTRUNNER_CONFIG` 環境變數，使用其值。
-3. 預設路徑 `~/.config/hostrunner/config.yaml`。
+server 依下列順序決定設定檔：
+1. `-config` 旗標指定的路徑。
+2. `HOSTRUNNER_CONFIG` 環境變數。
+3. 預設 `~/.config/hostrunner/config.yaml`。
 
-**建議：** 將設定檔放在 `~/.config/hostrunner/config.yaml`。在 macOS 上以外掛程式搭配 Claude Desktop 使用時，這點尤其重要——macOS GUI 應用程式不會繼承 Shell 的環境變數，因此在 Shell 設定檔中設定的 `HOSTRUNNER_CONFIG` 對從 Claude Desktop 啟動的伺服器無效。
+**建議**放在 `~/.config/hostrunner/config.yaml`。GUI app 不繼承 shell 環境變數，shell profile 裡的 `HOSTRUNNER_CONFIG` 對 Claude Desktop 或 Codex app 啟動的 server 看不到。
 
-請從內附範本建立設定檔，**範本中的路徑為佔位符，請替換成您自己的路徑**：
+從範例建立設定檔——**裡面的路徑是佔位符，請改成你自己的**：
 
 ```bash
 mkdir -p ~/.config/hostrunner
@@ -141,42 +162,49 @@ cp examples/config.example.yaml ~/.config/hostrunner/config.yaml
 ```
 
 ```yaml
-# 工具允許存取的絕對 Host 路徑。
-# 超出這些根目錄的請求將被拒絕。
+# 工具允許存取的主機絕對路徑；解析後落在這些根目錄之外的請求一律拒絕。
 allowed_roots:
   - /Users/yourname/code
 
-# run_command 可呼叫的 CLI 執行檔名稱。
-# codex_review_start 只需要 'codex'——本端不處理 git。
-# 如需在 run_command 中使用其他工具（如 git、gemini），請在此新增。
+# run_command 可執行的 CLI（peer agent 不看這份清單，其 argv 由 server 固定）。
 allowed_commands:
   - codex
+  - claude
+  - git
 
-# 單一 Host 指令的最大執行時間（codex review 本身，或一次 run_command）。
-# 必須帶單位（例如 600s、10m），純數字會被拒絕。審查以背景 job 執行，
-# 因此這個值可以放心設得比 MCP client 約 180 秒的單次呼叫上限更大。
+# 主機上單一指令（一次 review、一輪 chat、或一次 run_command）的最長時間。
+# 必須帶單位（600s、10m）。job 在背景執行，所以可以遠大於 MCP client 的單次呼叫時限。
 timeout: 600s
 
-# 單次工具呼叫回傳的最大位元組數（超出時輸出將被截斷並附上提示）。
+# 單次工具呼叫回傳的最大位元組數（超過會截斷並附註）。
 max_output_bytes: 200000
 
-# 附加到每次 'codex review' 呼叫的選用額外旗標（例如模型覆寫設定）。
-# codex_extra_args: ["-c", "model=o3"]
-
-# 是否即時將 codex/指令輸出轉送至伺服器的 stderr（預設：true）。
-# Claude Desktop 會將此記錄到 ~/Library/Logs/Claude/mcp-server-hostrunner.log。
-# 啟用 stream_output（預設）後，codex 的即時輸出可在該日誌中查看。
-# 設為 false 可關閉此功能。
+# 是否即時把 peer CLI 輸出 tee 到 server 的 stderr（預設 true）。
+# Claude Desktop 會收進 ~/Library/Logs/Claude/mcp-server-hostrunner.log。
 stream_output: true
+
+# Peer agent。兩者皆可省略，預設如下。GUI app 找不到 CLI 時請填絕對路徑
+#（例如 `which claude` 的輸出）。
+agents:
+  codex:
+    command: codex
+    extra_args: []              # 例如 ["-c", "model=o3"]
+    mcp_server_name: hostrunner # 在 codex peer 內停用的 [mcp_servers.<name>]（防遞迴）
+  claude:
+    command: claude
+    extra_args: []              # 例如 ["--model", "opus"]
+
+# 舊欄位，仍然有效，會附加到 agents.codex.extra_args：
+# codex_extra_args: ["-c", "model=o3"]
 ```
 
-> **注意：** 設定檔只在**伺服器啟動時讀取一次**。Claude Desktop 啟動時才會產生伺服器行程，因此修改 `config.yaml` 後必須完全重啟 Claude Desktop 才會生效。啟動時實際生效的設定值會記錄到 `~/Library/Logs/Claude/mcp-server-hostrunner.log`（尋找 `config loaded` 那一行，會顯示設定檔路徑與實際生效的 timeout）。
+> **注意：** 設定檔**只在 server 啟動時讀一次**。改完 `config.yaml` 後要完全重啟 Claude Desktop 或 Codex app（它們會重新啟動 server）才會生效。啟動時會記錄實際使用的值（找 `config loaded` 那行——顯示設定檔路徑、timeout 與各 agent 的指令）。
 
 ---
 
-## 向 Claude Desktop 註冊
+## 註冊到 Claude Desktop
 
-將以下設定加入 Claude Desktop 的設定檔（macOS 上通常位於 `~/Library/Application Support/Claude/claude_desktop_config.json`）：
+在 Claude Desktop 設定檔（macOS 通常是 `~/Library/Application Support/Claude/claude_desktop_config.json`）加入：
 
 ```json
 {
@@ -189,151 +217,165 @@ stream_output: true
 }
 ```
 
-請將 `/usr/local/bin/hostrunner` 替換為實際的執行檔路徑（例如 `~/go/bin/hostrunner`），並相應更新設定檔路徑。儲存庫中的 `examples/claude_desktop_config.example.json` 也提供了相同的範例。
+把 `/usr/local/bin/hostrunner` 改成實際的二進位檔路徑（例如 `~/go/bin/hostrunner`），設定檔路徑也一併調整。`examples/claude_desktop_config.example.json` 有相同範例。
 
-編輯完設定後，請重新啟動 Claude Desktop。您應可在 MCP 伺服器清單中看到 **hostrunner**。
+改完後重啟 Claude Desktop，MCP servers 清單應出現 **hostrunner**。
 
 ---
 
 ## 可用工具
 
-### `codex_review_start`
+| 工具 | 用途 |
+|---|---|
+| `review_start(folder, agent?, scope?, base?, commit?, prompt?)` | 由 peer agent 開始唯讀 review；回傳 `job_id`。 |
+| `chat_start(folder, message, agent?, session_id?)` | 送一則訊息給 peer；回傳 `job_id`。帶上前一次回覆的 `session_id` 即可續接同一段對話。 |
+| `job_status(job_id)` | long-poll（≤50 秒）取得 job 結果。 |
+| `codex_review_start`、`codex_review_status` | 已棄用，等同 `review_start(agent=codex)` / `job_status`。 |
+| `run_command(command, args, folder)` | 在主機資料夾執行允許清單中的 argv。 |
 
-對 Host git 儲存庫中的變更啟動唯讀的 `codex review`，以 Host 上的**背景工作**執行。此呼叫會立即回傳 `job_id`；請用 `codex_review_status` 輪詢結果。使用原生的 `codex review` 子指令，由 codex 自行計算差異，不修改任何檔案。只需 `codex` CLI 即可，本端不處理 git。
+所有 `folder` 參數都是**主機**絕對路徑（例如 `/Users/you/proj`），絕不是 `/sessions/…` 沙箱路徑。
 
-| 參數 | 類型 | 必填 | 說明 |
+### `review_start`
+
+| 參數 | 型別 | 必填 | 說明 |
 |---|---|---|---|
-| `folder` | string | 是 | **HOST** 絕對路徑，指向 git 儲存庫（例如 `/Users/you/proj`）。不能是 `/sessions/…` 沙箱路徑。 |
-| `scope` | string | 否 | `uncommitted`（預設，涵蓋已暫存、未暫存及未追蹤的變更）、`base`（與 base 分支比較）或 `commit`（特定 commit） |
-| `base` | string | 否 | 基礎分支或 ref；當 `scope=base` 時必填（例如 `main`） |
-| `commit` | string | 否 | Commit SHA；當 `scope=commit` 時必填 |
-| `prompt` | string | 否 | 自訂審查指示（例如 `"聚焦於錯誤處理"`）。只在使用者明確要求聚焦審查時傳入；一般審查請省略。`prompt` 可以和任何 `scope` 併用：codex CLI 不允許 scope 旗標與位置參數 `[PROMPT]` 同時出現，伺服器會自動把 scope 併入 prompt 文字。 |
+| `folder` | string | 是 | git repo 的主機絕對路徑 |
+| `agent` | string | 否 | `codex` 或 `claude`。省略則自動選另一家（Claude client → codex、Codex client → claude） |
+| `scope` | string | 否 | `uncommitted`（預設——staged+unstaged+untracked）、`base`（相對 base branch）、`commit`（特定 commit） |
+| `base` | string | 否 | base branch 或 ref；`scope=base` 時必填（例如 `main`） |
+| `commit` | string | 否 | commit SHA；`scope=commit` 時必填 |
+| `prompt` | string | 否 | 自訂 review 指示（例如 `"focus on error handling"`）。只在明確要聚焦時使用；可與任何 `scope` 搭配。 |
 
-**回傳：** `job_id`、模式與資料夾。
+`agent=codex` 執行 `codex review`（原生，自行計算 diff）。`agent=claude` 以 review prompt 執行 `claude -p`，要求它用唯讀 git 指令檢視變更。
+
+**回傳：**
 
 ```
 Review started in the background.
 job_id: 3fa4c19e02d1
+agent: codex
 mode: uncommitted
 folder: /Users/you/proj
 ```
 
-### `codex_review_status`
+### `chat_start`
 
-取得背景審查的狀態／結果。每次呼叫最多阻塞約 50 秒等待完成（long-poll），然後回傳完成的審查結果或 `running` 提示——請用同一個 `job_id` 反覆呼叫直到完成。完成的結果會保留約 30 分鐘。
-
-| 參數 | 類型 | 必填 | 說明 |
+| 參數 | 型別 | 必填 | 說明 |
 |---|---|---|---|
-| `job_id` | string | 是 | `codex_review_start` 回傳的 id |
+| `folder` | string | 是 | peer 可以讀的主機絕對路徑 |
+| `message` | string | 是 | 要說的話。請附上 peer 需要的脈絡——它只看得到 repo 與這段對話。 |
+| `agent` | string | 否 | `codex` 或 `claude`；省略則自動選 peer |
+| `session_id` | string | 否 | 前一次 `job_status` 回傳的 `session_id`，用來續接該對話 |
 
-**回傳（已完成）：**
+### `job_status`
+
+最多阻塞約 50 秒等待完成，然後回傳完成結果或 `running` 通知——重複呼叫直到完成。完成的結果保留約 30 分鐘。
+
+| 參數 | 型別 | 必填 | 說明 |
+|---|---|---|---|
+| `job_id` | string | 是 | `review_start` / `chat_start` 回傳的 id |
+
+**回傳（review 完成）：**
 
 ```
-status: completed (job 3fa4c19e02d1, elapsed 4m12s)
+status: completed (job 3fa4c19e02d1, agent codex, kind review, elapsed 4m12s)
 
 Mode: uncommitted (codex exit 0)
 
 --- Codex review ---
-… codex 審查結果 …
+… 發現的問題 …
 ```
 
-**回傳（執行中）：**
+**回傳（chat 完成）：**
 
 ```
-status: running (job 3fa4c19e02d1, elapsed 1m40s)
-The review is still in progress. Call codex_review_status again with the same job_id.
+status: completed (job 9b1d…, agent claude, kind chat, elapsed 1m05s)
+
+session_id: 6c2f0a4e-…
+
+--- Claude reply ---
+… peer 的回答 …
+```
+
+**回傳（仍在執行）：**
+
+```
+status: running (job 3fa4c19e02d1, agent codex, kind review, elapsed 1m40s)
+Still in progress. Call job_status again with the same job_id.
+```
+
+從 Codex 端發起的討論範例（peer = claude）：
+
+```
+chat_start(folder="/Users/you/proj", message="Critique the retry design in the uncommitted diff.")
+job_status(job_id="…")   → session_id: abc…  --- Claude reply --- …
+chat_start(folder="/Users/you/proj", session_id="abc…", message="Point 2 only applies to POST; does that change your view?")
 ```
 
 ### `run_command`
 
-在 Host 資料夾中執行白名單中的指令（argv 陣列，不使用 shell）。
+在主機資料夾執行允許清單中的指令（argv，無 shell）。
 
-| 參數 | 類型 | 必填 | 說明 |
+| 參數 | 型別 | 必填 | 說明 |
 |---|---|---|---|
-| `command` | string | 是 | 執行檔名稱；必須在 `allowed_commands` 中 |
-| `args` | string[] | 否 | 以字串陣列表示的參數 |
-| `folder` | string | 是 | 位於 `allowed_root` 內的 **HOST** 絕對路徑 |
+| `command` | string | 是 | 執行檔名稱；必須在 `allowed_commands` 內 |
+| `args` | string[] | 否 | 參數字串陣列 |
+| `folder` | string | 是 | `allowed_root` 內的**主機**絕對路徑 |
 
-**回傳：** 結束碼、執行耗時、stdout 和 stderr。
-
-```
-exit=0 elapsed=1.23s
---- stdout ---
-…
---- stderr ---
-…
-```
+**回傳：** exit code、耗時、stdout、stderr。
 
 ---
 
-## 安裝 Cowork 技能
+## Skills
 
-儲存庫在 `skills/codex-loop/SKILL.md` 提供了一個現成的 Cowork 技能。此技能教導 Cowork 在每輪編輯後自動執行 `codex_review_start` / `codex_review_status`。
+`skills/` 下附三個 skill，採用 Claude（plugin）與 Codex（`~/.agents/skills/`）共用的 `SKILL.md` 格式：
 
-將技能目錄複製到您的 Cowork 技能資料夾以完成安裝：
+- **`peer-review`** — 以 `review_start` / `job_status` 跑「編輯 → peer review → 編輯」循環；agent 中立，兩邊都能用。
+- **`peer-chat`** — 以 `chat_start` / `job_status` 進行多輪討論，保留 `session_id`。
+- **`codex-loop`** — 原本 Claude 端的循環，現在改用 `review_start(agent="codex")`。
 
-```bash
-cp -r skills/codex-loop ~/.config/claude/skills/
-```
-
-（技能目錄的確切位置可能因您的 Cowork 安裝而有所不同，請參閱 Cowork 設定中的說明。）
-
-安裝完成後，您可以在 Cowork 中透過以下方式觸發此技能：
-
-- 「用 codex 審查我的變更」
-- 「對我的編輯執行 codex review」
-- 「開始編輯與審查的迴圈」
+Claude marketplace plugin 與 `scripts/install-codex.sh` 會自動安裝它們。用類似「peer review my changes」、「ask claude/codex what it thinks about this」、「review my changes with codex」的話即可觸發。
 
 ---
 
 ## 使用方式
 
-以下是在 Claude Cowork 中進行**編輯 → 審查 → 編輯**的典型工作流程：
+典型的 **編輯 → peer review → 編輯**，兩邊都一樣：
 
-1. **與 Cowork Session 分享您的專案資料夾。** Cowork 會將其掛載於 `/sessions/<id>/mnt/yourproject`。
+1. **開啟專案**：在 Claude 把資料夾分享給 Cowork session，或在 Codex 開啟專案。
+2. **用 agent 自己的工具改檔。**
+3. **開始 review。** `review_start(folder="/Users/yourname/code/yourproject")`——主機路徑，不是 `/sessions/…`。server 自動選另一家的 agent 並回傳 `job_id`。
+4. **輪詢** `job_status` 直到 `status: completed`。每次最多阻塞約 50 秒。
+5. **迭代。** 修掉問題、重新 review，直到乾淨。
 
-2. **使用 Cowork 的 Read/Write/Edit 工具編輯檔案。** 例如，Cowork 編輯了 `/sessions/<id>/mnt/yourproject/src/handler.go`。
-
-3. **啟動 codex 審查。** 以 **Host** 路徑呼叫 `codex_review_start` 工具：
-   ```
-   codex_review_start(
-     folder = "/Users/yourname/code/yourproject"
-   )
-   ```
-   請傳入 Host 路徑 — 即您在 Finder 或終端機中看到的路徑 — **而非** `/sessions/…` 沙箱路徑。工具會立即回傳 `job_id`，審查在背景執行。
-
-4. **輪詢審查結果。** 以 `job_id` 呼叫 `codex_review_status`，直到回傳 `status: completed` 與 codex 的審查意見。每次輪詢最多阻塞約 50 秒，因此數分鐘的審查只需幾次呼叫，永遠不會撞到 MCP client 約 180 秒的單次呼叫上限。
-
-5. **反覆迭代。** 修正 Cowork 找到的問題，再啟動新的審查。重複此步驟直到審查通過。
+要**討論**，用 `chat_start` 送一則聚焦的訊息，從 `job_status` 讀回覆，再帶回傳的 `session_id` 繼續。
 
 ---
 
 ## 安全性
 
-- **指令白名單。** 只有在 `allowed_commands` 中明確列出的指令才能被呼叫。任何其他指令的請求都會被拒絕。
-- **根目錄範圍限制。** 每個路徑參數都會被解析（包含符號連結），並與 `allowed_roots` 進行比對。超出這些根目錄的請求將被拒絕。
-- **絕不使用 Shell。** 指令以 argv 陣列透過 `os/exec` 執行，不會使用 `sh -c`，不進行 glob 展開，也不存在 shell 注入風險。
-- **原生 Host 行程，而非 Docker。** 伺服器以普通 OS 行程運行，而非在容器中。在 Docker 中運行將無法存取 Host 的 `codex` 執行檔、授權憑證和檔案，完全違背了其設計目的。
-- **僅限 Host 路徑。** 工具只接受絕對 Host 路徑（例如 `/Users/…`）。任何以 `/sessions/` 開頭的路徑都會被拒絕，並附上描述性錯誤訊息，指引您使用正確的 Host 路徑。
-- **唯讀 codex。** `codex_review_start` 使用 `codex review` 子指令，該指令為非互動式且唯讀——由 codex 自行計算差異，不修改任何檔案。從不傳遞寫入或自動套用的旗標。選用的 `codex_extra_args` 設定欄位可傳遞額外旗標（例如模型覆寫），不影響安全性。
+- **根目錄限制。** 每個路徑參數都解析（含符號連結）後對照 `allowed_roots`。
+- **無 shell。** 指令以 argv 陣列經 `os/exec` 執行，沒有 `sh -c`、沒有 glob 展開、沒有 shell injection。
+- **唯讀 peer。** peer 的 argv 由 server 固定：codex 用 `codex review` / `codex exec --sandbox read-only`；claude 用 `-p --bare --permission-mode dontAsk --tools Read,Grep,Glob,Bash --allowedTools Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*) --disallowedTools Edit,Write,NotebookEdit`。只有 `agents.<name>.command` 與 `extra_args` 來自設定；`allowed_commands` 只管 `run_command`。
+- **不遞迴。** `--bare`（claude）與 `-c mcp_servers.<name>.enabled=false`（codex）讓 peer 不會載入 hostrunner 自己。
+- **`run_command` 指令允許清單。**
+- **原生程序，非 Docker。** 容器化會失去主機 CLI 與登入狀態的存取。
+- **僅主機路徑。** 以 `/sessions/` 開頭的路徑一律拒絕並給出提示。
 
 ---
 
 ## 開發
 
 ```bash
-# 建構執行檔
-make build
-
-# 執行所有測試
-make test
-
-# 程式碼靜態分析
-make vet
+make build   # 建置
+make test    # 測試
+make vet     # vet
 ```
+
+設計文件在 `docs/superpowers/specs/`。
 
 ---
 
-## 授權條款
+## 授權
 
-MIT — 詳見 [LICENSE](LICENSE)。
+MIT — 見 [LICENSE](LICENSE)。
