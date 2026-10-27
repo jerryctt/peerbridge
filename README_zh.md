@@ -38,7 +38,7 @@ Coding agent 各自活在自己的 app 裡。[Claude](https://claude.ai)（Deskt
 │  peer = 另一家的 agent（依 MCP client 名稱自動推斷）                 │
 │                                                                   │
 │   agent=codex  → codex review …  /  codex exec --sandbox read-only│
-│   agent=claude → claude -p --bare --permission-mode dontAsk …     │
+│   agent=claude → claude -p --strict-mcp-config --permission-mode dontAsk │
 │                         ▼                                         │
 │                 git repo  /Users/…/proj   （peer 只能讀）           │
 └───────────────────────────────────────────────────────────────────┘
@@ -51,7 +51,7 @@ Coding agent 各自活在自己的 app 裡。[Claude](https://claude.ai)（Deskt
 - **`review_start` / `job_status`** — 由 peer agent 對 uncommitted 變更、base branch diff 或某個 commit 做唯讀 review：`codex` 跑 `codex review`；`claude` 用 review prompt 跑 `claude -p`。Review 以**背景 job** 執行，因為它常超過 MCP 單次呼叫的時限（Claude Desktop 約 180 秒、Codex 的 `tool_timeout_sec`）；start/status 都很快回，review 本身可以跑到你設定的 `timeout`。
 - **`chat_start` / `job_status`** — 送一則訊息給可以讀 repo 的 peer；結果帶 `session_id`，可續接同一段對話（`claude -p --resume`、`codex exec resume`）。回合由 GUI 裡的 agent 驅動。
 - **自動選 peer** — 不帶 `agent` 時，Claude client 會找 codex、Codex client 會找 claude；要指定就傳 `agent`。
-- **唯讀 peer** — claude 以 `--bare --permission-mode dontAsk --tools Read,Grep,Glob,Bash --allowedTools <唯讀 git> --disallowedTools Edit,Write,NotebookEdit` 執行；codex chat 以 `--sandbox read-only` 執行。`--bare`（claude）與 `mcp_servers.<name>.enabled=false`（codex）防止 peer 遞迴呼叫 hostrunner。
+- **唯讀 peer** — claude 以 `--strict-mcp-config --permission-mode dontAsk --tools Read,Grep,Glob,Bash --allowedTools <唯讀 git> --disallowedTools Edit,Write,NotebookEdit` 執行；codex chat 以 `--sandbox read-only` 執行。`--strict-mcp-config`（claude）與 `-c mcp_servers={}`（codex）讓 peer 完全沒有 MCP server，無法遞迴呼叫 hostrunner，同時你原本的 CLI 登入照常有效。
 - **`codex_review_start` / `codex_review_status`** — 已棄用的別名，等同 `review_start(agent=codex)` / `job_status`；既有安裝照常可用。
 - **`run_command`** — 在主機資料夾內以 argv 陣列（絕不經過 shell）執行任何允許清單中的 CLI（例如 `git`）。
 - **嚴格安全** — 根目錄限制、符號連結解析後的路徑檢查、peer 的 argv 固定且唯讀、`run_command` 的指令允許清單、絕不使用 shell。
@@ -189,7 +189,6 @@ agents:
   codex:
     command: codex
     extra_args: []              # 例如 ["-c", "model=o3"]
-    mcp_server_name: hostrunner # 在 codex peer 內停用的 [mcp_servers.<name>]（防遞迴）
   claude:
     command: claude
     extra_args: []              # 例如 ["--model", "opus"]
@@ -356,8 +355,8 @@ Claude marketplace plugin 與 `scripts/install-codex.sh` 會自動安裝它們�
 
 - **根目錄限制。** 每個路徑參數都解析（含符號連結）後對照 `allowed_roots`。
 - **無 shell。** 指令以 argv 陣列經 `os/exec` 執行，沒有 `sh -c`、沒有 glob 展開、沒有 shell injection。
-- **唯讀 peer。** peer 的 argv 由 server 固定：codex 用 `codex review` / `codex exec --sandbox read-only`；claude 用 `-p --bare --permission-mode dontAsk --tools Read,Grep,Glob,Bash --allowedTools Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*) --disallowedTools Edit,Write,NotebookEdit`。只有 `agents.<name>.command` 與 `extra_args` 來自設定；`allowed_commands` 只管 `run_command`。
-- **不遞迴。** `--bare`（claude）與 `-c mcp_servers.<name>.enabled=false`（codex）讓 peer 不會載入 hostrunner 自己。
+- **唯讀 peer。** peer 的 argv 由 server 固定：codex 用 `codex review` / `codex exec --sandbox read-only`；claude 用 `-p --strict-mcp-config --permission-mode dontAsk --tools Read,Grep,Glob,Bash --allowedTools Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*) --disallowedTools Edit,Write,NotebookEdit`。只有 `agents.<name>.command` 與 `extra_args` 來自設定；`allowed_commands` 只管 `run_command`。
+- **不遞迴。** `--strict-mcp-config`（claude）與 `-c mcp_servers={}`（codex）讓 peer 啟動時沒有任何 MCP server，所以不會載入 hostrunner 自己。（刻意不用 `--bare`：它會關閉 OAuth/keychain 認證，訂閱登入會失效。）
 - **`run_command` 指令允許清單。**
 - **原生程序，非 Docker。** 容器化會失去主機 CLI 與登入狀態的存取。
 - **僅主機路徑。** 以 `/sessions/` 開頭的路徑一律拒絕並給出提示。

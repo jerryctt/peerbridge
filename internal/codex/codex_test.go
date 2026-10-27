@@ -89,7 +89,7 @@ func TestReviewArgsPromptSuppressesScopeFlags(t *testing.T) {
 }
 
 func newBackend() *Backend {
-	return New(agent.Settings{Command: "codex", MCPServerName: "hostrunner"})
+	return New(agent.Settings{Command: "codex"})
 }
 
 func TestBackendReviewArgsNativeWithExtraArgs(t *testing.T) {
@@ -119,20 +119,26 @@ func TestBackendReviewArgsNativeWithExtraArgs(t *testing.T) {
 func TestBackendChatArgs(t *testing.T) {
 	b := newBackend()
 	got := strings.Join(b.ChatArgs("hello there", ""), " ")
-	want := "exec --json --sandbox read-only --skip-git-repo-check -c mcp_servers.hostrunner.enabled=false hello there"
+	want := "exec --json --sandbox read-only --skip-git-repo-check -c mcp_servers={} hello there"
 	if got != want {
 		t.Errorf("new session:\n got %q\nwant %q", got, want)
 	}
 	got = strings.Join(b.ChatArgs("more", "thread-123"), " ")
-	want = "exec resume --json --sandbox read-only --skip-git-repo-check -c mcp_servers.hostrunner.enabled=false thread-123 more"
+	// `exec resume` rejects --sandbox; the policy goes through -c instead.
+	want = "exec resume --json --skip-git-repo-check -c sandbox_mode=\"read-only\" -c mcp_servers={} thread-123 more"
 	if got != want {
 		t.Errorf("resume:\n got %q\nwant %q", got, want)
 	}
-	// No MCP server name -> no -c override.
+	// Extra args go after the fixed flags, before the positionals.
 	b2 := New(agent.Settings{Command: "codex", ExtraArgs: []string{"-m", "o3"}})
 	got = strings.Join(b2.ChatArgs("x", ""), " ")
-	if strings.Contains(got, "mcp_servers") || !strings.HasSuffix(got, "-m o3 x") {
+	if !strings.HasSuffix(got, "-c mcp_servers={} -m o3 x") {
 		t.Errorf("args = %q", got)
+	}
+	for _, a := range b.ChatArgs("x", "t") {
+		if a == "--sandbox" {
+			t.Errorf("resume must not receive --sandbox (codex rejects it): %v", b.ChatArgs("x", "t"))
+		}
 	}
 }
 

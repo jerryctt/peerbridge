@@ -38,7 +38,7 @@ Coding agents live in their own apps. [Claude](https://claude.ai) (Desktop / Cow
 │  peer = the other vendor (inferred from the MCP client name)      │
 │                                                                   │
 │   agent=codex  → codex review …  /  codex exec --sandbox read-only│
-│   agent=claude → claude -p --bare --permission-mode dontAsk …     │
+│   agent=claude → claude -p --strict-mcp-config --permission-mode dontAsk │
 │                         ▼                                         │
 │                 git repo  /Users/…/proj   (read-only for peers)    │
 └───────────────────────────────────────────────────────────────────┘
@@ -51,7 +51,7 @@ Coding agents live in their own apps. [Claude](https://claude.ai) (Desktop / Cow
 - **`review_start` / `job_status`** — read-only review of uncommitted changes, a base-branch diff, or a commit, by a peer agent: `codex` runs `codex review`; `claude` runs `claude -p` with a review prompt. Reviews run as **background jobs** because they outlast MCP per-call timeouts (Claude Desktop ~180s, Codex `tool_timeout_sec`); start/status calls are fast, the review itself may run up to your configured `timeout`.
 - **`chat_start` / `job_status`** — send one message to the peer, which can read the repo; the result carries a `session_id` to continue the conversation (`claude -p --resume`, `codex exec resume`). Your GUI agent drives the rounds.
 - **Automatic peer selection** — omit `agent` and a Claude client talks to codex, a Codex client talks to claude. Pass `agent` to pick explicitly.
-- **Read-only peers** — claude runs with `--bare --permission-mode dontAsk --tools Read,Grep,Glob,Bash --allowedTools <read-only git> --disallowedTools Edit,Write,NotebookEdit`; codex chat runs with `--sandbox read-only`. `--bare` (claude) and `mcp_servers.<name>.enabled=false` (codex) stop the peer from calling hostrunner recursively.
+- **Read-only peers** — claude runs with `--strict-mcp-config --permission-mode dontAsk --tools Read,Grep,Glob,Bash --allowedTools <read-only git> --disallowedTools Edit,Write,NotebookEdit`; codex chat runs with `--sandbox read-only`. `--strict-mcp-config` (claude) and `-c mcp_servers={}` (codex) give the peer zero MCP servers, so it cannot call hostrunner recursively, while your normal CLI logins keep working.
 - **`codex_review_start` / `codex_review_status`** — deprecated aliases of `review_start(agent=codex)` / `job_status`; existing installs keep working.
 - **`run_command`** — run any allowlisted CLI (e.g. `git`) in a host folder, as an argv array (never a shell).
 - **Strict security** — root-directory containment, symlink-resolved path checks, fixed read-only argv for peers, command allowlist for `run_command`, no shell ever.
@@ -193,7 +193,6 @@ agents:
   codex:
     command: codex
     extra_args: []              # e.g. ["-c", "model=o3"]
-    mcp_server_name: hostrunner # [mcp_servers.<name>] disabled inside the codex peer (recursion guard)
   claude:
     command: claude
     extra_args: []              # e.g. ["--model", "opus"]
@@ -360,8 +359,8 @@ For a **discussion**, use `chat_start` with a focused message, read the reply fr
 
 - **Root-directory containment.** Every path argument is resolved (including symlinks) and checked against `allowed_roots`.
 - **No shell.** Commands are run as argv arrays via `os/exec`. There is no `sh -c`, no glob expansion, no shell injection.
-- **Read-only peers.** Peer argv is fixed by the server: codex uses `codex review` / `codex exec --sandbox read-only`; claude uses `-p --bare --permission-mode dontAsk --tools Read,Grep,Glob,Bash --allowedTools Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*) --disallowedTools Edit,Write,NotebookEdit`. Only `agents.<name>.command` and `extra_args` come from config. `allowed_commands` applies to `run_command`.
-- **No recursion.** `--bare` (claude) and `-c mcp_servers.<name>.enabled=false` (codex) keep the peer from loading hostrunner itself.
+- **Read-only peers.** Peer argv is fixed by the server: codex uses `codex review` / `codex exec --sandbox read-only`; claude uses `-p --strict-mcp-config --permission-mode dontAsk --tools Read,Grep,Glob,Bash --allowedTools Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*) --disallowedTools Edit,Write,NotebookEdit`. Only `agents.<name>.command` and `extra_args` come from config. `allowed_commands` applies to `run_command`.
+- **No recursion.** `--strict-mcp-config` (claude) and `-c mcp_servers={}` (codex) start the peer with no MCP servers at all, so it cannot load hostrunner itself. (`--bare` is deliberately not used: it disables OAuth/keychain auth and would break subscription logins.)
 - **Command allowlist** for `run_command`.
 - **Native host process, not Docker.** Running in a container would break access to the host CLIs and their logins.
 - **Host paths only.** Any path beginning with `/sessions/` is rejected with a hint.

@@ -33,10 +33,6 @@ type Settings struct {
 	Command string
 	// ExtraArgs are appended to every invocation (model overrides etc.).
 	ExtraArgs []string
-	// MCPServerName is the [mcp_servers.<name>] entry a codex peer should
-	// disable so it cannot call back into hostrunner (recursion guard).
-	// Only meaningful for the codex backend.
-	MCPServerName string
 }
 
 // Backend builds argv for, and parses output of, one vendor's CLI.

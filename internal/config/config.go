@@ -44,15 +44,14 @@ type Config struct {
 
 // AgentConfig configures one peer CLI (see internal/agent.Settings).
 type AgentConfig struct {
-	Command       string   `yaml:"command"`
-	ExtraArgs     []string `yaml:"extra_args"`
-	MCPServerName string   `yaml:"mcp_server_name"`
+	Command   string   `yaml:"command"`
+	ExtraArgs []string `yaml:"extra_args"`
 }
 
 // DefaultAgents returns the built-in agent settings.
 func DefaultAgents() map[string]AgentConfig {
 	return map[string]AgentConfig{
-		"codex":  {Command: "codex", MCPServerName: "hostrunner"},
+		"codex":  {Command: "codex"},
 		"claude": {Command: "claude"},
 	}
 }
@@ -68,9 +67,6 @@ func (c *Config) Agent(name string) AgentConfig {
 	}
 	if a.Command == "" {
 		a.Command = def.Command
-	}
-	if a.MCPServerName == "" {
-		a.MCPServerName = def.MCPServerName
 	}
 	if name == "codex" && len(c.CodexExtraArgs) > 0 {
 		a.ExtraArgs = append(append([]string{}, a.ExtraArgs...), c.CodexExtraArgs...)

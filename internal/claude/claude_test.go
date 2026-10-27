@@ -26,7 +26,7 @@ func TestChatArgs(t *testing.T) {
 	}
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
-		"--bare", "--output-format json", "--permission-mode dontAsk",
+		"--strict-mcp-config", "--output-format json", "--permission-mode dontAsk",
 		"--tools Read,Grep,Glob,Bash",
 		"--allowedTools Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*)",
 		"--disallowedTools Edit,Write,NotebookEdit",
@@ -36,7 +36,7 @@ func TestChatArgs(t *testing.T) {
 			t.Errorf("missing %q in %q", want, joined)
 		}
 	}
-	if strings.Contains(joined, "--resume") || strings.Contains(joined, "dangerously") || strings.Contains(joined, "acceptEdits") {
+	if strings.Contains(joined, "--resume") || strings.Contains(joined, "dangerously") || strings.Contains(joined, "acceptEdits") || strings.Contains(joined, "--bare") {
 		t.Errorf("unexpected flag in %q", joined)
 	}
 	resumed := strings.Join(b.ChatArgs("again", "sess-1"), " ")

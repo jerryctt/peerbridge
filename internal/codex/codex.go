@@ -63,17 +63,25 @@ func (b *Backend) ReviewArgs(scope, base, commit, prompt string) ([]string, bool
 	return args, true, nil
 }
 
+// noMCP empties the peer's MCP server table so it cannot call back into
+// hostrunner (or anything else). A whole-table override is used rather than
+// `mcp_servers.<name>.enabled=false`, which codex rejects ("invalid
+// transport") when that entry does not exist in the user's config.toml.
+const noMCP = "mcp_servers={}"
+
 // ChatArgs runs one non-interactive turn in a read-only sandbox, emitting
-// JSONL so ParseChat can recover the thread id. The hostrunner MCP server
-// entry is disabled inside the peer so it cannot call back into us.
+// JSONL so ParseChat can recover the thread id.
+//
+// `codex exec resume` is a subcommand with its own option set: it accepts
+// --json, --skip-git-repo-check and -c overrides but NOT --sandbox, so the
+// read-only policy is expressed as the equivalent config override there.
+// (Verified against codex CLI help and a live run.)
 func (b *Backend) ChatArgs(message, sessionID string) []string {
-	args := []string{"exec"}
-	if sessionID != "" {
-		args = append(args, "resume")
-	}
-	args = append(args, "--json", "--sandbox", "read-only", "--skip-git-repo-check")
-	if b.s.MCPServerName != "" {
-		args = append(args, "-c", fmt.Sprintf("mcp_servers.%s.enabled=false", b.s.MCPServerName))
+	var args []string
+	if sessionID == "" {
+		args = []string{"exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "-c", noMCP}
+	} else {
+		args = []string{"exec", "resume", "--json", "--skip-git-repo-check", "-c", `sandbox_mode="read-only"`, "-c", noMCP}
 	}
 	args = append(args, b.s.ExtraArgs...)
 	if sessionID != "" {

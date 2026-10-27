@@ -20,7 +20,6 @@ agents:
   codex:
     command: codex
     extra_args: []              # e.g. ["-c", "model=o3"]
-    mcp_server_name: hostrunner # [mcp_servers.<name>] entry disabled inside the codex peer (recursion guard)
   claude:
     command: claude
     extra_args: []              # e.g. ["--model", "opus"]

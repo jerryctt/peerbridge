@@ -156,7 +156,7 @@ func NewService(cfg *config.Config, r agent.Runner, log zerolog.Logger) *Service
 	return &Service{
 		Cfg: cfg, Runner: r, Log: log, Jobs: newJobStore(),
 		Backends: agent.Registry{
-			"codex":  codex.New(agent.Settings{Command: cx.Command, ExtraArgs: cx.ExtraArgs, MCPServerName: cx.MCPServerName}),
+			"codex":  codex.New(agent.Settings{Command: cx.Command, ExtraArgs: cx.ExtraArgs}),
 			"claude": claude.New(agent.Settings{Command: cl.Command, ExtraArgs: cl.ExtraArgs}),
 		},
 	}

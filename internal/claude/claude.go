@@ -38,14 +38,16 @@ const allowedRules = "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git s
 // deniedTools removes the editing tools from the peer entirely.
 const deniedTools = "Edit,Write,NotebookEdit"
 
-// ChatArgs runs one print-mode turn. --bare skips the user's MCP servers,
-// plugins, hooks and skills, which both speeds startup and prevents the peer
-// from calling hostrunner recursively. The message is passed immediately
-// after -p so that no later flag can consume it as a value.
+// ChatArgs runs one print-mode turn. --strict-mcp-config with no --mcp-config
+// loads zero MCP servers, so the peer cannot call hostrunner recursively while
+// the user's normal OAuth/subscription login keeps working (--bare would be
+// stricter but disables OAuth and keychain auth, breaking logged-in CLIs).
+// The message is passed immediately after -p so that no later list-valued
+// flag can consume it as a value.
 func (b *Backend) ChatArgs(message, sessionID string) []string {
 	args := []string{
 		"-p", message,
-		"--bare",
+		"--strict-mcp-config",
 		"--output-format", "json",
 		"--permission-mode", "dontAsk",
 		"--tools", readOnlyTools,

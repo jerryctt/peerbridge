@@ -120,7 +120,7 @@ func TestAgentsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Agent("codex"); got.Command != "codex" || got.MCPServerName != "hostrunner" {
+	if got := c.Agent("codex"); got.Command != "codex" {
 		t.Errorf("codex defaults = %+v", got)
 	}
 	if got := c.Agent("claude"); got.Command != "claude" {
@@ -133,14 +133,14 @@ func TestAgentsOverrideAndLegacyMerge(t *testing.T) {
 	p := writeTemp(t, "allowed_roots:\n  - "+root+"\n"+
 		"codex_extra_args: [\"-c\", \"model=o3\"]\n"+
 		"agents:\n"+
-		"  codex:\n    command: /opt/homebrew/bin/codex\n    mcp_server_name: hr\n"+
+		"  codex:\n    command: /opt/homebrew/bin/codex\n"+
 		"  claude:\n    command: /usr/local/bin/claude\n    extra_args: [\"--model\", \"opus\"]\n")
 	c, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cx := c.Agent("codex")
-	if cx.Command != "/opt/homebrew/bin/codex" || cx.MCPServerName != "hr" {
+	if cx.Command != "/opt/homebrew/bin/codex" {
 		t.Errorf("codex override = %+v", cx)
 	}
 	if strings.Join(cx.ExtraArgs, " ") != "-c model=o3" {
