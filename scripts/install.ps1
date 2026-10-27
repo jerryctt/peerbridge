@@ -134,6 +134,20 @@ if ($Local) {
 }
 
 # ---- 2. peerbridge config -----------------------------------------------------
+# Migrate a pre-rename hostrunner config if the user has one and no new one yet.
+$legacyCandidates = @()
+if ($onWindows) {
+  $legacyCandidates += Join-Path (Join-Path $env:APPDATA "hostrunner") "config.yaml"
+  $legacyCandidates += Join-Path $home_ ".config\hostrunner\config.yaml"
+} else {
+  $legacyCandidates += Join-Path $HOME ".config/hostrunner/config.yaml"
+}
+$legacy = $legacyCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ((-not (Test-Path $hrConfig)) -and $legacy) {
+  New-Item -ItemType Directory -Force -Path (Split-Path $hrConfig) | Out-Null
+  Copy-Item -Force $legacy $hrConfig
+  Write-Host "config: copied your existing $legacy to $hrConfig (the old file is left in place)"
+}
 if (-not (Test-Path $hrConfig)) {
   New-Item -ItemType Directory -Force -Path (Split-Path $hrConfig) | Out-Null
   $example = Read-Text (Join-Path $Root "examples\config.example.yaml")

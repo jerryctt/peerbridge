@@ -151,14 +151,19 @@ for s in peer-review peer-chat; do
   echo "skill: $SKILLS/$s"
 done
 
-# 4. peerbridge config
+# 4. peerbridge config (migrate a pre-rename hostrunner config if present)
 HR_CFG="$HOME/.config/peerbridge/config.yaml"
-if [ ! -f "$HR_CFG" ]; then
+LEGACY_CFG="$HOME/.config/hostrunner/config.yaml"
+if [ -f "$HR_CFG" ]; then
+  echo "config: $HR_CFG (unchanged)"
+elif [ -f "$LEGACY_CFG" ]; then
+  mkdir -p "$(dirname "$HR_CFG")"
+  cp "$LEGACY_CFG" "$HR_CFG"
+  echo "config: copied your existing $LEGACY_CFG to $HR_CFG (the old file is left in place)"
+else
   mkdir -p "$(dirname "$HR_CFG")"
   cp "$ROOT/examples/config.example.yaml" "$HR_CFG"
   echo "created $HR_CFG — edit allowed_roots before use"
-else
-  echo "config: $HR_CFG (unchanged)"
 fi
 
 cat <<EOF

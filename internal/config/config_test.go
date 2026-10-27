@@ -93,6 +93,7 @@ func TestResolvePath(t *testing.T) {
 	})
 
 	t.Run("explicit empty + env set returns env", func(t *testing.T) {
+		t.Setenv("HOSTRUNNER_CONFIG", "")
 		t.Setenv("PEERBRIDGE_CONFIG", "/from/env.yaml")
 		got := ResolvePath("")
 		if got != "/from/env.yaml" {
@@ -101,12 +102,16 @@ func TestResolvePath(t *testing.T) {
 	})
 
 	t.Run("explicit empty + env empty returns default path", func(t *testing.T) {
+		// Hermetic: a developer's real ~/.config/hostrunner (legacy) or
+		// exported HOSTRUNNER_CONFIG must not influence the default.
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+		t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
 		t.Setenv("PEERBRIDGE_CONFIG", "")
+		t.Setenv("HOSTRUNNER_CONFIG", "")
 		got := ResolvePath("")
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			t.Skip("os.UserHomeDir() unavailable; skipping default path check")
-		}
 		want := filepath.Join(".config", "peerbridge", "config.yaml")
 		if !strings.HasSuffix(got, want) {
 			t.Fatalf("expected path ending in %q, got %q", want, got)
@@ -177,6 +182,7 @@ func TestResolvePathPrefersExistingCandidate(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
 	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("PEERBRIDGE_CONFIG", "")
+	t.Setenv("HOSTRUNNER_CONFIG", "")
 
 	paths := DefaultPaths()
 	if len(paths) < 2 {
