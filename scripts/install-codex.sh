@@ -114,14 +114,10 @@ echo "codex config: [mcp_servers.$NAME] written to $CFG"
 
 LINK="$HOME/.local/bin/hostrunner"
 mkdir -p "$HOME/.local/bin"
-# Resolve both sides before linking: --local pointing at the link itself (or at
-# what it already resolves to) must not turn the binary into a self-referential
-# symlink.
-resolve() {
-  d="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || d="$(dirname "$1")"
-  echo "$d/$(basename "$1")"
-}
-if [ -e "$LINK" ] && [ "$(resolve "$LINK")" = "$(resolve "$BIN")" ]; then
+# Never link a file onto itself: --local may name the link, the file it points
+# to, or another symlink to that file. `-ef` compares the final inodes after
+# following every symlink, so all of those are caught.
+if [ -e "$LINK" ] && [ "$LINK" -ef "$BIN" ]; then
   echo "binary: $LINK (already in place)"
 elif [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$BIN" ]; then
   echo "binary: $LINK -> $BIN (unchanged)"

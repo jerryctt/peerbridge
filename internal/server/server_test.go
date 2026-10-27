@@ -247,6 +247,25 @@ func TestReviewDisablesRepoLocalFilters(t *testing.T) {
 			t.Errorf("diff env missing %q:\n%s", want, diffEnv)
 		}
 	}
+	// The probe runs uncapped (a cut list would leave a driver live) and a
+	// truncated probe fails the review closed.
+	for _, q := range r.all() {
+		if q.Command == "git" && strings.HasSuffix(strings.Join(q.Args, " "), filterProbe) && q.MaxOutputBytes != 0 {
+			t.Errorf("filter probe must be uncapped, got %d", q.MaxOutputBytes)
+		}
+	}
+	r4 := &scriptedRunner{replies: map[string]exec.Result{gitKey(filterProbe): {Stdout: "filter.a.clean\nfilter.b", Truncated: true}}, fallback: exec.Result{Stdout: claudeJSON}}
+	s4, repo4 := newSvc(t, r4)
+	out, _ = s4.ReviewStart(context.Background(), "claude", repo4, "uncommitted", "", "", "")
+	if got, isErr := waitStatus(t, s4, jobID(t, out)); !isErr || !strings.Contains(got, "truncated") {
+		t.Errorf("truncated probe must fail closed, got %q isErr=%v", got, isErr)
+	}
+	for _, q := range r4.all() {
+		if q.Command == "claude" {
+			t.Error("claude must not run after a truncated filter probe")
+		}
+	}
+
 	// The probe itself must not carry overrides, and "no filters" (exit 1)
 	// must add none.
 	r2 := &scriptedRunner{replies: map[string]exec.Result{gitKey(filterProbe): {ExitCode: 1}}, fallback: exec.Result{Stdout: claudeJSON}}

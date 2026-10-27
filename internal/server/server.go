@@ -352,13 +352,22 @@ var filterKeyPattern = regexp.MustCompile(`^filter\.(.+)\.(clean|smudge|process|
 // passed as GIT_CONFIG_COUNT/KEY/VALUE env (git >= 2.31), which has the
 // highest precedence of all config sources.
 func (s *Service) filterOverrides(ctx context.Context, dir string) ([]string, error) {
-	res, err := s.git(ctx, dir, nil, "config", "--name-only", "--get-regexp", `^filter\.`)
+	// Uncapped: a truncated list would leave a driver live. Fail closed if
+	// the runner reports truncation anyway.
+	args := append(append([]string{}, gitSafety...), "config", "--name-only", "--get-regexp", `^filter\.`)
+	res, err := s.Runner.Run(ctx, exec.Request{
+		Command: "git", Args: args, Dir: dir, Env: gitEnv,
+		Timeout: s.Cfg.Timeout, MaxOutputBytes: 0, StreamTo: s.streamTo(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("git config: %w", err)
 	}
 	// exit 1 = no matching keys; anything else is a real failure.
 	if res.ExitCode != 0 && res.ExitCode != 1 {
 		return nil, fmt.Errorf("git config --get-regexp failed (exit %d): %s", res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
+	if res.Truncated {
+		return nil, fmt.Errorf("git config --get-regexp output was truncated; refusing to compute a diff with possibly live filter drivers")
 	}
 	seen := map[string]bool{}
 	var drivers []string
