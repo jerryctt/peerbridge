@@ -7,7 +7,7 @@
 
 給 **Claude** 與 **Codex** 共用的本機 MCP server + plugin：在任一邊的 app 裡，都能請*另一家*的 agent 對你的程式碼做唯讀 code review，或進行多輪討論——全部在你自己的機器上、用你自己的 CLI 登入執行。
 
-> **自 `hostrunner-mcp` 改名（v0.3.1）。** 舊的 GitHub 網址會自動轉址。若你裝過舊版：binary、MCP server、plugin 與設定目錄現在都叫 `peerbridge`。既有的 `~/.config/hostrunner/config.yaml` 與 `HOSTRUNNER_CONFIG` 在你搬移前仍會被讀取；重新執行 `scripts/install-codex.sh` / `scripts/install.ps1` 會把舊的 `[mcp_servers.hostrunner]` 區塊換成 `[mcp_servers.peerbridge]`；Claude Desktop 請重新安裝 **peerbridge** plugin（並移除舊的 **hostrunner**），手動註冊 binary 的話請更新 `claude_desktop_config.json`。權限規則也隨之改成 `mcp__plugin_peerbridge_peerbridge__*`。MCP 工具名稱（`review_start`、`chat_start`、`job_status`、`run_command`）不變。
+> **自 `hostrunner-mcp` 改名（v0.3.2）。** 舊的 GitHub 網址會自動轉址。若你裝過舊版：binary、MCP server、plugin 與設定目錄現在都叫 `peerbridge`。既有的 `~/.config/hostrunner/config.yaml` 與 `HOSTRUNNER_CONFIG` 在你搬移前仍會被讀取；重新執行 `scripts/install-codex.sh` / `scripts/install.ps1` 會把舊的 `[mcp_servers.hostrunner]` 區塊換成 `[mcp_servers.peerbridge]`；Claude Desktop 請重新安裝 **peerbridge** plugin（並移除舊的 **hostrunner**），手動註冊 binary 的話請更新 `claude_desktop_config.json`。權限規則也隨之改成 `mcp__plugin_peerbridge_peerbridge__*`。MCP 工具名稱（`review_start`、`chat_start`、`job_status`、`run_command`）不變。
 
 ---
 

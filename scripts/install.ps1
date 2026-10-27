@@ -9,7 +9,7 @@
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Codex     # Codex only
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Claude    # Claude Desktop only
     ... -Local .\peerbridge.exe      use a locally built binary instead of downloading
-    ... -Version 0.3.1               pin a release (default: version in .claude-plugin\plugin.json)
+    ... -Version 0.3.2               pin a release (default: version in .claude-plugin\plugin.json)
     ... -ServerName peerbridge       MCP server name used in both configs
     ... -NoClaudeConfigWrite         print the Claude Desktop JSON snippet instead of merging it
 
@@ -297,7 +297,12 @@ if ($Claude) {
       $managedDirs = @((Join-Path $home_ ".local/share/hostrunner"), (Join-Path $home_ ".cache/hostrunner"))
       if ($env:LOCALAPPDATA) { $managedDirs += Join-Path $env:LOCALAPPDATA "hostrunner" }
       $isManaged = $false
-      foreach ($d in $managedDirs) { if ($d -and $legacyCmd.StartsWith($d, [System.StringComparison]::OrdinalIgnoreCase)) { $isManaged = $true } }
+      $normCmd = $legacyCmd -replace '/', '\'
+      foreach ($d in $managedDirs) {
+        # Match at a path boundary so a sibling such as ...\hostrunner-custom\x.exe is not treated as ours.
+        $prefix = (($d -replace '/', '\').TrimEnd('\')) + '\'
+        if ($d -and $normCmd.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { $isManaged = $true }
+      }
       if ($isManaged) {
         $servers.PSObject.Properties.Remove("hostrunner")
         Write-Host "claude desktop: removed legacy mcpServers.hostrunner entry ($legacyCmd)"
