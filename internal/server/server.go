@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -344,11 +345,18 @@ func (s *Service) git(ctx context.Context, dir string, args ...string) (exec.Res
 // --no-ext-diff and --no-textconv keep git from running diff.external or
 // textconv helpers from the user's or repo's git config: those would execute
 // arbitrary programs on the host outside any peer sandbox.
-func gitArgs(scope, base, commit string, headUnborn bool) [][]string {
+//
+// For scope=base, mergeBase is the resolved merge-base of base and HEAD: the
+// worktree is diffed against it (not `base...HEAD`), so uncommitted fixes made
+// during an edit → review → edit loop are part of the next review.
+func gitArgs(scope, base, commit string, headUnborn bool, mergeBase string) [][]string {
 	const safe1, safe2 = "--no-ext-diff", "--no-textconv"
 	switch scope {
 	case "base":
-		return [][]string{{"diff", safe1, safe2, base + "...HEAD", "--"}}
+		return [][]string{
+			{"status", "--short", "--untracked-files=all"},
+			{"diff", safe1, safe2, mergeBase, "--"},
+		}
 	case "commit":
 		return [][]string{{"show", safe1, safe2, "--format=medium", commit, "--"}}
 	default: // uncommitted
@@ -367,32 +375,51 @@ func gitArgs(scope, base, commit string, headUnborn bool) [][]string {
 	}
 }
 
+var shaPattern = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+
 // changeContext runs gitArgs in dir and returns their concatenated output
 // (capped at MaxOutputBytes per command), for feeding to a review prompt.
-func (s *Service) changeContext(ctx context.Context, dir, scope, base, commit string) (string, error) {
+// truncated reports whether any command's output hit the cap, so the caller
+// can tell the user the review saw an incomplete diff.
+func (s *Service) changeContext(ctx context.Context, dir, scope, base, commit string) (text string, truncated bool, err error) {
 	headUnborn := false
-	if scope == "" || scope == "uncommitted" {
+	mergeBase := ""
+	switch scope {
+	case "", "uncommitted":
 		res, err := s.git(ctx, dir, "rev-parse", "--verify", "--quiet", "HEAD")
 		if err != nil {
-			return "", fmt.Errorf("git rev-parse: %w", err)
+			return "", false, fmt.Errorf("git rev-parse: %w", err)
 		}
 		headUnborn = res.ExitCode != 0
-	}
-	var out strings.Builder
-	for _, args := range gitArgs(scope, base, commit, headUnborn) {
-		res, err := s.git(ctx, dir, args...)
+	case "base":
+		res, err := s.git(ctx, dir, "merge-base", base, "HEAD")
 		if err != nil {
-			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+			return "", false, fmt.Errorf("git merge-base: %w", err)
 		}
 		if res.ExitCode != 0 {
-			return "", fmt.Errorf("git %s failed (exit %d): %s", strings.Join(args, " "), res.ExitCode, strings.TrimSpace(res.Stderr))
+			return "", false, fmt.Errorf("git merge-base %s HEAD failed (exit %d): %s", base, res.ExitCode, strings.TrimSpace(res.Stderr))
+		}
+		mergeBase = strings.TrimSpace(res.Stdout)
+		if !shaPattern.MatchString(mergeBase) {
+			return "", false, fmt.Errorf("git merge-base %s HEAD returned %q, not a commit id", base, agent.Tail(mergeBase, 80))
+		}
+	}
+	var out strings.Builder
+	for _, args := range gitArgs(scope, base, commit, headUnborn, mergeBase) {
+		res, err := s.git(ctx, dir, args...)
+		if err != nil {
+			return "", false, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		if res.ExitCode != 0 {
+			return "", false, fmt.Errorf("git %s failed (exit %d): %s", strings.Join(args, " "), res.ExitCode, strings.TrimSpace(res.Stderr))
 		}
 		fmt.Fprintf(&out, "$ git %s\n%s\n", strings.Join(args, " "), res.Stdout)
 		if res.Truncated {
+			truncated = true
 			out.WriteString("[diff truncated by max_output_bytes]\n")
 		}
 	}
-	return out.String(), nil
+	return out.String(), truncated, nil
 }
 
 // capReply trims a parsed reply to MaxOutputBytes with a marker.
@@ -414,15 +441,17 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 	}
 	maxBytes := s.Cfg.MaxOutputBytes
 	var stdin string
+	inputTruncated := false
 	if !native {
 		p, err := agent.ReviewPrompt(scope, base, commit, prompt)
 		if err != nil {
 			return err.Error(), true
 		}
-		diff, err := s.changeContext(ctx, dir, scope, base, commit)
+		diff, truncated, err := s.changeContext(ctx, dir, scope, base, commit)
 		if err != nil {
 			return err.Error(), true
 		}
+		inputTruncated = truncated
 		args = b.ChatArgs(p, "")
 		// The diff can be far larger than an argv element may be; the CLIs
 		// append piped stdin to the prompt, so it travels that way.
@@ -453,6 +482,9 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "Mode: %s (%s exit %d)\n\n--- %s review ---\n%s\n", label, b.Name(), res.ExitCode, agent.Label(b.Name()), text)
+	if inputTruncated {
+		fmt.Fprintf(&out, "\n[WARNING: the diff given to %s was truncated at max_output_bytes (%d); files beyond that point were not reviewed. Narrow the scope or raise max_output_bytes.]\n", b.Name(), s.Cfg.MaxOutputBytes)
+	}
 	out.WriteString(diagnostics(b, res, s.Cfg.Timeout))
 	return out.String(), false
 }

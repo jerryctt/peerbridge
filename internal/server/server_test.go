@@ -218,8 +218,12 @@ func TestReviewStartCodexFailureIncludesStderr(t *testing.T) {
 	}
 }
 
+const mergeBaseSHA = "0123456789abcdef0123456789abcdef01234567"
+
 func TestReviewStartClaudeViaPrompt(t *testing.T) {
-	r := &recordingRunner{reply: exec.Result{Stdout: claudeJSON}}
+	r := &scriptedRunner{replies: map[string]exec.Result{
+		gitKey("merge-base main HEAD"): {Stdout: mergeBaseSHA + "\n"},
+	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
 	out, isErr := s.ReviewStart(context.Background(), "claude", repo, "base", "main", "", "check auth")
 	if isErr {
@@ -250,9 +254,11 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 	}
 	// hostrunner computed the diff itself with read-only git, since the
 	// claude peer has no shell; "--" ends option parsing after the ref.
-	gitCalls := gitCalls(t, r.all())
-	if strings.Join(gitCalls, ";") != "diff --no-ext-diff --no-textconv main...HEAD --" {
-		t.Errorf("git calls = %v", gitCalls)
+	// base scope diffs the WORKTREE against the merge-base (not base...HEAD),
+	// so uncommitted fixes from the edit→review loop are reviewed too.
+	want := "merge-base main HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv " + mergeBaseSHA + " --"
+	if calls := gitCalls(t, r.all()); strings.Join(calls, ";") != want {
+		t.Errorf("git calls = %v", calls)
 	}
 }
 
@@ -317,7 +323,7 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 
 	// A failing git command aborts the job before the peer runs.
 	r2 := &scriptedRunner{replies: map[string]exec.Result{
-		gitKey("diff --no-ext-diff --no-textconv main...HEAD --"): {ExitCode: 128, Stderr: "fatal: bad revision"},
+		gitKey("merge-base main HEAD"): {ExitCode: 128, Stderr: "fatal: bad revision"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s2, repo2 := newSvc(t, r2)
 	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "base", "main", "", "")
@@ -329,6 +335,24 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 		if q.Command == "claude" {
 			t.Error("claude must not run when the diff cannot be computed")
 		}
+	}
+}
+
+func TestReviewWarnsWhenDiffTruncated(t *testing.T) {
+	r := &scriptedRunner{replies: map[string]exec.Result{
+		gitKey("diff --no-ext-diff --no-textconv --"): {Stdout: "+++ huge", Truncated: true},
+	}, fallback: exec.Result{Stdout: claudeJSON}}
+	s, repo := newSvc(t, r)
+	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "")
+	got, isErr := waitStatus(t, s, jobID(t, out))
+	if isErr {
+		t.Fatalf("status: %q", got)
+	}
+	if !strings.Contains(got, "CLAUDE_SAYS") || !strings.Contains(got, "WARNING") || !strings.Contains(got, "truncated") {
+		t.Errorf("truncated input must be reported to the caller: %q", got)
+	}
+	if !strings.Contains(r.last().Stdin, "[diff truncated by max_output_bytes]") {
+		t.Errorf("peer should also be told: %q", r.last().Stdin)
 	}
 }
 
