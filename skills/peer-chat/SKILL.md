@@ -25,8 +25,10 @@ relays messages and keeps the peer's session alive.
    asked for a fixed number of rounds. Then summarize both positions and your
    recommendation.
 
-The peer is read-only: it can inspect files and run `git diff`/`log`/`status`/
-`show`, nothing else. If an edit is needed, you make it.
+The peer is read-only: it can inspect files (codex can also run commands in
+its own read-only sandbox), nothing else. If an edit is needed, you make it.
+Tell it which files or diff to look at — a claude peer has no shell, so say
+"see internal/http/client.go" rather than "run git diff".
 
 ## Critical: always use the HOST path
 

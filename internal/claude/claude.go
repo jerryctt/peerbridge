@@ -28,30 +28,39 @@ func (b *Backend) ReviewArgs(scope, base, commit, _ string) ([]string, bool, err
 	return nil, false, nil
 }
 
-// readOnlyTools is the full set of built-in tools the peer may use at all.
-const readOnlyTools = "Read,Grep,Glob,Bash"
+// readOnlyTools is the full set of built-in tools the peer may use. There is
+// deliberately no Bash: `claude` has no OS sandbox, and even "read-only" git
+// invocations can write (`git diff --output=FILE`), so the peer gets file
+// reading only. Review diffs are computed by hostrunner and embedded in the
+// prompt instead (see server.runReview).
+const readOnlyTools = "Read,Grep,Glob"
 
-// allowedRules auto-approves only reads and read-only git commands. Under
-// --permission-mode dontAsk anything else is denied without prompting.
-const allowedRules = "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*)"
+// deniedTools is belt-and-braces on top of --tools: even if a tool were
+// re-added by some setting, editing and shell stay denied.
+const deniedTools = "Edit,Write,NotebookEdit,Bash"
 
-// deniedTools removes the editing tools from the peer entirely.
-const deniedTools = "Edit,Write,NotebookEdit"
-
-// ChatArgs runs one print-mode turn. --strict-mcp-config with no --mcp-config
-// loads zero MCP servers, so the peer cannot call hostrunner recursively while
-// the user's normal OAuth/subscription login keeps working (--bare would be
-// stricter but disables OAuth and keychain auth, breaking logged-in CLIs).
+// ChatArgs runs one print-mode turn.
+//
+//   - --strict-mcp-config with no --mcp-config loads zero MCP servers, so the
+//     peer cannot call hostrunner recursively; unlike --bare it leaves the
+//     user's OAuth/subscription login intact.
+//   - --setting-sources "" loads no user/project/local settings, so inherited
+//     permission allow-rules and hooks cannot widen what the peer may do
+//     (--allowedTools is additive to settings; this makes it the whole list).
+//   - --permission-mode dontAsk denies anything not allowlisted without
+//     prompting, so the non-interactive run can never hang.
+//
 // The message is passed immediately after -p so that no later list-valued
 // flag can consume it as a value.
 func (b *Backend) ChatArgs(message, sessionID string) []string {
 	args := []string{
 		"-p", message,
 		"--strict-mcp-config",
+		"--setting-sources", "",
 		"--output-format", "json",
 		"--permission-mode", "dontAsk",
 		"--tools", readOnlyTools,
-		"--allowedTools", allowedRules,
+		"--allowedTools", readOnlyTools,
 		"--disallowedTools", deniedTools,
 	}
 	if sessionID != "" {

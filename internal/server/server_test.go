@@ -44,6 +44,30 @@ func (r *recordingRunner) last() exec.Request {
 	return r.reqs[len(r.reqs)-1]
 }
 
+func (r *recordingRunner) all() []exec.Request {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]exec.Request(nil), r.reqs...)
+}
+
+// scriptedRunner answers by "command args" key, with a fallback result for
+// anything else, and records every request.
+type scriptedRunner struct {
+	recordingRunner
+	replies  map[string]exec.Result
+	fallback exec.Result
+}
+
+func (r *scriptedRunner) Run(_ context.Context, req exec.Request) (exec.Result, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reqs = append(r.reqs, req)
+	if res, ok := r.replies[req.Command+" "+strings.Join(req.Args, " ")]; ok {
+		return res, nil
+	}
+	return r.fallback, nil
+}
+
 // blockingRunner blocks until its context is cancelled, like a CLI process
 // that only dies when its process group is killed.
 type blockingRunner struct{ started chan struct{} }
@@ -185,8 +209,72 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 	if req.Command != "claude" || req.Args[0] != "-p" {
 		t.Errorf("claude invocation = %v", req)
 	}
-	if !strings.Contains(req.Args[1], "base branch main") || !strings.Contains(req.Args[1], "check auth") {
+	if !strings.Contains(req.Args[1], "base branch main") || !strings.Contains(req.Args[1], "check auth") || !strings.Contains(req.Args[1], "--- diff ---") {
 		t.Errorf("review prompt = %q", req.Args[1])
+	}
+	if req.MaxOutputBytes != 0 {
+		t.Errorf("structured peer output must not be pre-truncated, got cap %d", req.MaxOutputBytes)
+	}
+	// hostrunner computed the diff itself with read-only git, since the
+	// claude peer has no shell.
+	var gitCalls []string
+	for _, q := range r.all() {
+		if q.Command == "git" {
+			gitCalls = append(gitCalls, strings.Join(q.Args, " "))
+		}
+	}
+	if strings.Join(gitCalls, ";") != "diff main...HEAD" {
+		t.Errorf("git calls = %v", gitCalls)
+	}
+}
+
+func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
+	r := &scriptedRunner{replies: map[string]exec.Result{
+		"git status --short --untracked-files=all": {Stdout: "?? new.go\n"},
+		"git diff HEAD": {Stdout: "+++ b/new.go\n"},
+	}, fallback: exec.Result{Stdout: claudeJSON}}
+	s, repo := newSvc(t, r)
+	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "")
+	got, isErr := waitStatus(t, s, jobID(t, out))
+	if isErr {
+		t.Fatalf("status: %q", got)
+	}
+	prompt := r.last().Args[1]
+	if !strings.Contains(prompt, "?? new.go") || !strings.Contains(prompt, "+++ b/new.go") {
+		t.Errorf("prompt should embed status and diff: %q", prompt)
+	}
+
+	// A failing git command aborts the job before the peer runs.
+	r2 := &scriptedRunner{replies: map[string]exec.Result{
+		"git diff main...HEAD": {ExitCode: 128, Stderr: "fatal: bad revision"},
+	}, fallback: exec.Result{Stdout: claudeJSON}}
+	s2, repo2 := newSvc(t, r2)
+	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "base", "main", "", "")
+	got, isErr = waitStatus(t, s2, jobID(t, out))
+	if !isErr || !strings.Contains(got, "bad revision") {
+		t.Errorf("want git failure surfaced, got %q isErr=%v", got, isErr)
+	}
+	for _, q := range r2.all() {
+		if q.Command == "claude" {
+			t.Error("claude must not run when the diff cannot be computed")
+		}
+	}
+}
+
+func TestChatReplyIsCappedAfterParsing(t *testing.T) {
+	big := strings.Repeat("x", 5000)
+	r := &recordingRunner{reply: exec.Result{Stdout: `{"type":"result","is_error":false,"result":"` + big + `","session_id":"s1"}`}}
+	s, repo := newSvc(t, r) // MaxOutputBytes is 1000 in newCfg
+	out, _ := s.ChatStart(context.Background(), "claude", repo, "hi", "")
+	got, isErr := waitStatus(t, s, jobID(t, out))
+	if isErr {
+		t.Fatalf("status: %q", got)
+	}
+	if !strings.Contains(got, "session_id: s1") || !strings.Contains(got, "[output truncated]") || strings.Count(got, "x") > 1100 {
+		t.Errorf("reply should be parsed then capped: len=%d", len(got))
+	}
+	if r.last().MaxOutputBytes != 0 {
+		t.Errorf("raw JSON must not be pre-truncated, got cap %d", r.last().MaxOutputBytes)
 	}
 }
 

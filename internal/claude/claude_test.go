@@ -24,20 +24,28 @@ func TestChatArgs(t *testing.T) {
 	if args[0] != "-p" || args[1] != "critique this" {
 		t.Errorf("message must directly follow -p: %v", args)
 	}
-	joined := strings.Join(args, " ")
+	joined := strings.Join(args, "\x1f") // visible separator so the empty value is checkable
 	for _, want := range []string{
-		"--strict-mcp-config", "--output-format json", "--permission-mode dontAsk",
-		"--tools Read,Grep,Glob,Bash",
-		"--allowedTools Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*)",
-		"--disallowedTools Edit,Write,NotebookEdit",
-		"--model opus",
+		"--strict-mcp-config", "--setting-sources\x1f\x1f", "--output-format\x1fjson", "--permission-mode\x1fdontAsk",
+		"--tools\x1fRead,Grep,Glob\x1f",
+		"--allowedTools\x1fRead,Grep,Glob\x1f",
+		"--disallowedTools\x1fEdit,Write,NotebookEdit,Bash",
+		"--model\x1fopus",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %q", want, joined)
 		}
 	}
-	if strings.Contains(joined, "--resume") || strings.Contains(joined, "dangerously") || strings.Contains(joined, "acceptEdits") || strings.Contains(joined, "--bare") {
-		t.Errorf("unexpected flag in %q", joined)
+	for _, bad := range []string{"--resume", "dangerously", "acceptEdits", "--bare", "Bash(git"} {
+		if strings.Contains(joined, bad) {
+			t.Errorf("unexpected %q in %q", bad, joined)
+		}
+	}
+	// No shell for the peer: Bash must not be in the available tool set.
+	for i, a := range args {
+		if a == "--tools" && strings.Contains(args[i+1], "Bash") {
+			t.Errorf("--tools must not include Bash: %q", args[i+1])
+		}
 	}
 	resumed := strings.Join(b.ChatArgs("again", "sess-1"), " ")
 	if !strings.Contains(resumed, "--resume sess-1") {

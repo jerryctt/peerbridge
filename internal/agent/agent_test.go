@@ -35,7 +35,7 @@ func TestReviewPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"base branch main", "focus on concurrency", "Do not modify", "git diff", "no issues"} {
+	for _, want := range []string{"base branch main", "focus on concurrency", "Do not modify", "--- diff ---", "Read, Grep and Glob", "no issues"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt should contain %q:\n%s", want, p)
 		}

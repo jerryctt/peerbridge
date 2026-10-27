@@ -287,12 +287,59 @@ func (s *Service) streamTo() io.Writer {
 	return nil
 }
 
-// run executes the backend command with the server's timeout and caps.
-func (s *Service) run(ctx context.Context, b agent.Backend, dir string, args []string) (exec.Result, error) {
+// run executes the backend command with the server's timeout. maxBytes caps
+// the captured output; 0 means uncapped, used when stdout is a structured
+// protocol stream that must be parsed whole before the reply is trimmed.
+func (s *Service) run(ctx context.Context, b agent.Backend, dir string, args []string, maxBytes int) (exec.Result, error) {
 	return s.Runner.Run(ctx, exec.Request{
 		Command: b.Command(), Args: args, Dir: dir,
-		Timeout: s.Cfg.Timeout, MaxOutputBytes: s.Cfg.MaxOutputBytes, StreamTo: s.streamTo(),
+		Timeout: s.Cfg.Timeout, MaxOutputBytes: maxBytes, StreamTo: s.streamTo(),
 	})
+}
+
+// gitArgs returns the read-only git invocations whose output describes the
+// review scope. Used only for backends without a native review command: the
+// claude peer has no shell, so hostrunner computes the diff for it.
+func gitArgs(scope, base, commit string) [][]string {
+	switch scope {
+	case "base":
+		return [][]string{{"diff", base + "...HEAD"}}
+	case "commit":
+		return [][]string{{"show", "--format=medium", commit}}
+	default: // uncommitted
+		return [][]string{{"status", "--short", "--untracked-files=all"}, {"diff", "HEAD"}}
+	}
+}
+
+// changeContext runs gitArgs in dir and returns their concatenated output
+// (capped at MaxOutputBytes in total), for embedding into a review prompt.
+func (s *Service) changeContext(ctx context.Context, dir, scope, base, commit string) (string, error) {
+	var out strings.Builder
+	for _, args := range gitArgs(scope, base, commit) {
+		res, err := s.Runner.Run(ctx, exec.Request{
+			Command: "git", Args: args, Dir: dir,
+			Timeout: s.Cfg.Timeout, MaxOutputBytes: s.Cfg.MaxOutputBytes, StreamTo: s.streamTo(),
+		})
+		if err != nil {
+			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		if res.ExitCode != 0 {
+			return "", fmt.Errorf("git %s failed (exit %d): %s", strings.Join(args, " "), res.ExitCode, strings.TrimSpace(res.Stderr))
+		}
+		fmt.Fprintf(&out, "$ git %s\n%s\n", strings.Join(args, " "), res.Stdout)
+		if res.Truncated {
+			out.WriteString("[diff truncated by max_output_bytes]\n")
+		}
+	}
+	return out.String(), nil
+}
+
+// capReply trims a parsed reply to MaxOutputBytes with a marker.
+func (s *Service) capReply(text string) string {
+	if s.Cfg.MaxOutputBytes > 0 && len(text) > s.Cfg.MaxOutputBytes {
+		return text[:s.Cfg.MaxOutputBytes] + "\n[output truncated]\n"
+	}
+	return text
 }
 
 func notFoundHint(b agent.Backend, err error) string {
@@ -304,14 +351,20 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 	if err != nil {
 		return err.Error(), true
 	}
+	maxBytes := s.Cfg.MaxOutputBytes
 	if !native {
 		p, err := agent.ReviewPrompt(scope, base, commit, prompt)
 		if err != nil {
 			return err.Error(), true
 		}
-		args = b.ChatArgs(p, "")
+		diff, err := s.changeContext(ctx, dir, scope, base, commit)
+		if err != nil {
+			return err.Error(), true
+		}
+		args = b.ChatArgs(p+"\n\n--- diff ---\n"+diff, "")
+		maxBytes = 0 // structured output: parse whole, cap the reply afterwards
 	}
-	res, err := s.run(ctx, b, dir, args)
+	res, err := s.run(ctx, b, dir, args, maxBytes)
 	if err != nil {
 		s.Log.Info().Str("tool", "review").Str("agent", b.Name()).Str("folder", dir).Err(err).Msg("invocation")
 		return notFoundHint(b, err), true
@@ -319,12 +372,15 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 	s.Log.Info().Str("tool", "review").Str("agent", b.Name()).Str("folder", dir).Dur("elapsed", res.Elapsed).Int("exit", res.ExitCode).Msg("invocation")
 
 	text := res.Stdout
-	if !native && res.ExitCode == 0 && !res.TimedOut {
+	if !native {
+		if res.ExitCode != 0 || res.TimedOut {
+			return fmt.Sprintf("%s review failed (%s exit %d)\n", agent.Label(b.Name()), b.Name(), res.ExitCode) + diagnostics(b, res, s.Cfg.Timeout), true
+		}
 		reply, _, perr := b.ParseChat(res.Stdout)
 		if perr != nil {
 			return perr.Error() + "\n" + diagnostics(b, res, s.Cfg.Timeout), true
 		}
-		text = reply
+		text = s.capReply(reply)
 	}
 	label := scope
 	if label == "" {
@@ -337,7 +393,7 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 }
 
 func (s *Service) runChat(ctx context.Context, b agent.Backend, dir, message, sessionID string) (string, bool) {
-	res, err := s.run(ctx, b, dir, b.ChatArgs(message, sessionID))
+	res, err := s.run(ctx, b, dir, b.ChatArgs(message, sessionID), 0)
 	if err != nil {
 		s.Log.Info().Str("tool", "chat").Str("agent", b.Name()).Str("folder", dir).Err(err).Msg("invocation")
 		return notFoundHint(b, err), true
@@ -359,7 +415,7 @@ func (s *Service) runChat(ctx context.Context, b agent.Backend, dir, message, se
 		return out.String(), true
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "session_id: %s\n\n--- %s reply ---\n%s\n", sid, agent.Label(b.Name()), reply)
+	fmt.Fprintf(&out, "session_id: %s\n\n--- %s reply ---\n%s\n", sid, agent.Label(b.Name()), s.capReply(reply))
 	out.WriteString(diagnostics(b, res, s.Cfg.Timeout))
 	return out.String(), false
 }
@@ -370,7 +426,7 @@ func (s *Service) runChat(ctx context.Context, b agent.Backend, dir, message, se
 func diagnostics(b agent.Backend, res exec.Result, timeout time.Duration) string {
 	var out strings.Builder
 	if res.ExitCode != 0 && res.Stderr != "" {
-		fmt.Fprintf(&out, "\n--- %s stderr (exit %d) ---\n%s\n", b.Name(), res.ExitCode, res.Stderr)
+		fmt.Fprintf(&out, "\n--- %s stderr (exit %d) ---\n%s\n", b.Name(), res.ExitCode, agent.Tail(res.Stderr, 8192))
 	}
 	if res.TimedOut {
 		fmt.Fprintf(&out, "\n[%s was killed after the server-side timeout of %s (config 'timeout'); the result is incomplete]\n", b.Name(), timeout)

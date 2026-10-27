@@ -63,25 +63,27 @@ func (b *Backend) ReviewArgs(scope, base, commit, prompt string) ([]string, bool
 	return args, true, nil
 }
 
-// noMCP empties the peer's MCP server table so it cannot call back into
-// hostrunner (or anything else). A whole-table override is used rather than
-// `mcp_servers.<name>.enabled=false`, which codex rejects ("invalid
-// transport") when that entry does not exist in the user's config.toml.
-const noMCP = "mcp_servers={}"
-
 // ChatArgs runs one non-interactive turn in a read-only sandbox, emitting
 // JSONL so ParseChat can recover the thread id.
 //
+// --ignore-user-config skips ~/.codex/config.toml (auth is still read from
+// CODEX_HOME), which is the only way to start the peer without the user's MCP
+// servers — and therefore without any route back into hostrunner. Config
+// overrides such as `-c mcp_servers={}` are merged, not replacing, and
+// `mcp_servers.<name>.enabled=false` errors when the entry is absent; both
+// were verified ineffective on a real install. Model and other preferences
+// can be re-supplied through extra_args (e.g. ["-m", "gpt-5"]).
+//
 // `codex exec resume` is a subcommand with its own option set: it accepts
-// --json, --skip-git-repo-check and -c overrides but NOT --sandbox, so the
-// read-only policy is expressed as the equivalent config override there.
-// (Verified against codex CLI help and a live run.)
+// --json, --skip-git-repo-check, --ignore-user-config and -c overrides but
+// NOT --sandbox, so the read-only policy is expressed as the equivalent
+// config override there. (Verified against codex CLI help and live runs.)
 func (b *Backend) ChatArgs(message, sessionID string) []string {
 	var args []string
 	if sessionID == "" {
-		args = []string{"exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "-c", noMCP}
+		args = []string{"exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-user-config"}
 	} else {
-		args = []string{"exec", "resume", "--json", "--skip-git-repo-check", "-c", `sandbox_mode="read-only"`, "-c", noMCP}
+		args = []string{"exec", "resume", "--json", "--skip-git-repo-check", "--ignore-user-config", "-c", `sandbox_mode="read-only"`}
 	}
 	args = append(args, b.s.ExtraArgs...)
 	if sessionID != "" {

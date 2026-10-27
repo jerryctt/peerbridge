@@ -51,11 +51,13 @@ is to make hostrunner **symmetric and host-agnostic**:
 | D3 | Single `job_status` tool for every job kind. | One polling contract for the skills; aliases map onto it. |
 | D4 | `agent` is optional; default inferred from MCP `clientInfo.name` (contains `claude` → `codex`; contains `codex` → `claude`); otherwise error "specify agent". | Same skill text works unchanged in both hosts. |
 | D5 | Duplicate-job key = (worktree root, agent, kind). | One repo may run a codex review and a claude chat concurrently, but never two codex reviews. |
-| D6 | Peer `claude` runs `claude -p --strict-mcp-config --output-format json --permission-mode dontAsk --tools "Read,Grep,Glob,Bash" --allowedTools <read-only git rules> --disallowedTools "Edit,Write,NotebookEdit"`. | `--strict-mcp-config` with no `--mcp-config` loads zero MCP servers (no hostrunner→claude→hostrunner recursion) while keeping the user's OAuth login. `--bare` was rejected in review: it disables OAuth/keychain auth. `dontAsk` denies anything not allowlisted without prompting. |
-| D7 | Peer `codex` chat runs `codex exec --json --sandbox read-only --skip-git-repo-check -c mcp_servers={} "<prompt>"`; resume uses `codex exec resume --json --skip-git-repo-check -c sandbox_mode="read-only" -c mcp_servers={} <SESSION_ID> "<prompt>"` (the `resume` subcommand rejects `--sandbox`, verified live). Review keeps `codex review` as today. | `--json` gives `thread.started.thread_id` and `item.completed/agent_message`. `mcp_servers={}` empties the peer's MCP table so it cannot call hostrunner; `mcp_servers.<name>.enabled=false` was rejected because codex fails with "invalid transport" when that entry is absent from the user's config.toml. |
+| D6 | Peer `claude` runs `claude -p <msg> --strict-mcp-config --setting-sources "" --output-format json --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`. No shell at all; review diffs are computed by hostrunner (D11). | `--strict-mcp-config` with no `--mcp-config` loads zero MCP servers (no recursion) while keeping the user's OAuth login; `--bare` was rejected in review because it disables OAuth/keychain auth. `--setting-sources ""` stops user/project permission rules and hooks from widening the peer (`--allowedTools` is additive). Bash was removed in review: claude has no OS sandbox and `Bash(git diff:*)` would still allow `git diff --output=FILE`. |
+| D7 | Peer `codex` chat runs `codex exec --json --sandbox read-only --skip-git-repo-check --ignore-user-config "<prompt>"`; resume uses `codex exec resume --json --skip-git-repo-check --ignore-user-config -c sandbox_mode="read-only" <SESSION_ID> "<prompt>"` (the `resume` subcommand rejects `--sandbox`, verified live). Review keeps `codex review` as today. | `--json` gives `thread.started.thread_id` and `item.completed/agent_message`. `--ignore-user-config` skips `~/.codex/config.toml` (auth still read from `CODEX_HOME`) and was verified live to drop the user's MCP servers; `-c mcp_servers={}` merges rather than replaces (servers still listed), and `mcp_servers.<name>.enabled=false` fails with "invalid transport" when the entry is absent — both rejected. Model preferences can be re-supplied via `extra_args`. |
 | D8 | Claude has no `review` subcommand → server composes a review prompt (scope sentence + fixed instructions + user prompt) and runs it through the chat path, but as kind `review`. | Keeps `review_start` semantics identical for both agents. |
 | D9 | Config gains an `agents:` map; legacy `codex_extra_args` still honoured (merged into `agents.codex.extra_args`). | Backward compatible config. |
 | D10 | Commands are referenced by configurable path (`agents.<a>.command`, default `codex` / `claude`). | macOS GUI apps don't inherit shell `PATH`; users can put absolute paths. |
+| D11 | For backends without a native review (claude), hostrunner runs read-only `git` itself (`status --short --untracked-files=all` + `diff HEAD`; `diff <base>...HEAD`; `show --format=medium <sha>`), caps the output at `max_output_bytes`, and appends it to the review prompt after `--- diff ---`. A failing git command fails the job before the peer runs. | The peer has no shell (D6), so it cannot compute the diff itself. This revises the v1 non-goal "no git handling on our side" for the claude path only; codex still computes its own diff. |
+| D12 | Structured peer output (claude JSON, codex JSONL) is captured uncapped, parsed, and only the extracted reply is trimmed to `max_output_bytes`. Native `codex review` text output stays capped at capture time. | Capping JSONL before parsing dropped the final `agent_message` on long tool traces (review finding). |
 
 ## 3. Tool Surface
 
@@ -139,9 +141,9 @@ func Default(clientName string) (string, bool) // infer peer from MCP clientInfo
 
 ### `internal/codex` additions
 - `ChatArgs`: `exec --json --sandbox read-only --skip-git-repo-check
-  -c mcp_servers={} [extra] <message>`; with session:
-  `exec resume --json --skip-git-repo-check -c sandbox_mode="read-only"
-  -c mcp_servers={} [extra] <sessionID> <message>`.
+  --ignore-user-config [extra] <message>`; with session:
+  `exec resume --json --skip-git-repo-check --ignore-user-config
+  -c sandbox_mode="read-only" [extra] <sessionID> <message>`.
 - `ParseChat`: scan JSONL; `thread.started` → `thread_id`; last
   `item.completed` with `item.type == "agent_message"` → `text`. Error if no
   agent message found (include tail of stdout for diagnostics).
@@ -150,10 +152,10 @@ func Default(clientName string) (string, bool) // infer peer from MCP clientInfo
 
 ### `internal/claude`
 - `ReviewArgs` → `native=false`.
-- `ChatArgs`: `-p --strict-mcp-config --output-format json --permission-mode dontAsk
-  --tools Read,Grep,Glob,Bash --allowedTools "Read" "Grep" "Glob"
-  "Bash(git diff *)" "Bash(git log *)" "Bash(git status *)" "Bash(git show *)"
-  --disallowedTools Edit Write NotebookEdit [--resume <id>] [extra] <message>`.
+- `ChatArgs`: `-p <message> --strict-mcp-config --setting-sources ""
+  --output-format json --permission-mode dontAsk --tools Read,Grep,Glob
+  --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash
+  [--resume <id>] [extra]`.
 - `ParseChat`: JSON object; `session_id`, `result`; if `is_error` true →
   error carrying `result`.
 

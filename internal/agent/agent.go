@@ -75,7 +75,7 @@ func ScopeSentence(scope, base, commit string) (string, error) {
 }
 
 const reviewInstructions = "You are a read-only code reviewer working in the current repository. " +
-	"Use `git status`, `git diff`, `git log` and `git show` to see the changes, and read surrounding files as needed. " +
+	"The diff under review is appended below after a line reading '--- diff ---'; use the Read, Grep and Glob tools to inspect surrounding code as needed (you have no shell). " +
 	"Do not modify anything. " +
 	"Report concrete bugs, regressions, security problems and risky assumptions, each with file path and line reference, ordered by severity, and explain briefly why each matters. " +
 	"Skip style nits unless asked. If you find no issues, say so explicitly."
