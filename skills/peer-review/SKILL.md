@@ -21,8 +21,8 @@ description: >
 
 The peer is strictly read-only: it can read files in the repo (and codex can
 run commands inside its own read-only sandbox), but it cannot edit. For a
-claude peer, hostrunner computes the diff with read-only git and embeds it in
-the prompt. All edits are yours.
+claude peer, hostrunner computes the diff with read-only git and hands it to
+the peer on stdin. All edits are yours.
 
 Reviews run as background jobs because they often take several minutes —
 longer than an MCP client's per-tool-call limit. Each start/status call

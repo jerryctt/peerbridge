@@ -290,36 +290,62 @@ func (s *Service) streamTo() io.Writer {
 // run executes the backend command with the server's timeout. maxBytes caps
 // the captured output; 0 means uncapped, used when stdout is a structured
 // protocol stream that must be parsed whole before the reply is trimmed.
-func (s *Service) run(ctx context.Context, b agent.Backend, dir string, args []string, maxBytes int) (exec.Result, error) {
+// stdin, when non-empty, is fed to the process (large review diffs go this
+// way rather than through argv, which has a ~128 KiB per-argument limit).
+func (s *Service) run(ctx context.Context, b agent.Backend, dir string, args []string, stdin string, maxBytes int) (exec.Result, error) {
 	return s.Runner.Run(ctx, exec.Request{
-		Command: b.Command(), Args: args, Dir: dir,
+		Command: b.Command(), Args: args, Dir: dir, Stdin: stdin,
 		Timeout: s.Cfg.Timeout, MaxOutputBytes: maxBytes, StreamTo: s.streamTo(),
+	})
+}
+
+// emptyTree is git's well-known hash of the empty tree: diffing against it
+// shows every tracked file as added, which is the right baseline for a
+// repository whose HEAD is unborn (no commits yet).
+const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+// git runs one read-only git command in dir with the configured caps.
+func (s *Service) git(ctx context.Context, dir string, args ...string) (exec.Result, error) {
+	return s.Runner.Run(ctx, exec.Request{
+		Command: "git", Args: args, Dir: dir,
+		Timeout: s.Cfg.Timeout, MaxOutputBytes: s.Cfg.MaxOutputBytes, StreamTo: s.streamTo(),
 	})
 }
 
 // gitArgs returns the read-only git invocations whose output describes the
 // review scope. Used only for backends without a native review command: the
-// claude peer has no shell, so hostrunner computes the diff for it.
-func gitArgs(scope, base, commit string) [][]string {
+// claude peer has no shell, so hostrunner computes the diff for it. Refs were
+// validated by agent.ValidateRef (never option-like); the trailing "--" ends
+// option parsing anyway so a ref can only ever be a revision.
+func gitArgs(scope, base, commit string, headUnborn bool) [][]string {
 	switch scope {
 	case "base":
-		return [][]string{{"diff", base + "...HEAD"}}
+		return [][]string{{"diff", base + "...HEAD", "--"}}
 	case "commit":
-		return [][]string{{"show", "--format=medium", commit}}
+		return [][]string{{"show", "--format=medium", commit, "--"}}
 	default: // uncommitted
-		return [][]string{{"status", "--short", "--untracked-files=all"}, {"diff", "HEAD"}}
+		head := "HEAD"
+		if headUnborn {
+			head = emptyTree
+		}
+		return [][]string{{"status", "--short", "--untracked-files=all"}, {"diff", head, "--"}}
 	}
 }
 
 // changeContext runs gitArgs in dir and returns their concatenated output
-// (capped at MaxOutputBytes in total), for embedding into a review prompt.
+// (capped at MaxOutputBytes per command), for feeding to a review prompt.
 func (s *Service) changeContext(ctx context.Context, dir, scope, base, commit string) (string, error) {
+	headUnborn := false
+	if scope == "" || scope == "uncommitted" {
+		res, err := s.git(ctx, dir, "rev-parse", "--verify", "--quiet", "HEAD")
+		if err != nil {
+			return "", fmt.Errorf("git rev-parse: %w", err)
+		}
+		headUnborn = res.ExitCode != 0
+	}
 	var out strings.Builder
-	for _, args := range gitArgs(scope, base, commit) {
-		res, err := s.Runner.Run(ctx, exec.Request{
-			Command: "git", Args: args, Dir: dir,
-			Timeout: s.Cfg.Timeout, MaxOutputBytes: s.Cfg.MaxOutputBytes, StreamTo: s.streamTo(),
-		})
+	for _, args := range gitArgs(scope, base, commit, headUnborn) {
+		res, err := s.git(ctx, dir, args...)
 		if err != nil {
 			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 		}
@@ -352,6 +378,7 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 		return err.Error(), true
 	}
 	maxBytes := s.Cfg.MaxOutputBytes
+	var stdin string
 	if !native {
 		p, err := agent.ReviewPrompt(scope, base, commit, prompt)
 		if err != nil {
@@ -361,10 +388,13 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 		if err != nil {
 			return err.Error(), true
 		}
-		args = b.ChatArgs(p+"\n\n--- diff ---\n"+diff, "")
+		args = b.ChatArgs(p, "")
+		// The diff can be far larger than an argv element may be; the CLIs
+		// append piped stdin to the prompt, so it travels that way.
+		stdin = "--- diff ---\n" + diff
 		maxBytes = 0 // structured output: parse whole, cap the reply afterwards
 	}
-	res, err := s.run(ctx, b, dir, args, maxBytes)
+	res, err := s.run(ctx, b, dir, args, stdin, maxBytes)
 	if err != nil {
 		s.Log.Info().Str("tool", "review").Str("agent", b.Name()).Str("folder", dir).Err(err).Msg("invocation")
 		return notFoundHint(b, err), true
@@ -393,7 +423,7 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 }
 
 func (s *Service) runChat(ctx context.Context, b agent.Backend, dir, message, sessionID string) (string, bool) {
-	res, err := s.run(ctx, b, dir, b.ChatArgs(message, sessionID), 0)
+	res, err := s.run(ctx, b, dir, b.ChatArgs(message, sessionID), "", 0)
 	if err != nil {
 		s.Log.Info().Str("tool", "chat").Str("agent", b.Name()).Str("folder", dir).Err(err).Msg("invocation")
 		return notFoundHint(b, err), true

@@ -209,29 +209,50 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 	if req.Command != "claude" || req.Args[0] != "-p" {
 		t.Errorf("claude invocation = %v", req)
 	}
-	if !strings.Contains(req.Args[1], "base branch main") || !strings.Contains(req.Args[1], "check auth") || !strings.Contains(req.Args[1], "--- diff ---") {
+	if !strings.Contains(req.Args[1], "base branch main") || !strings.Contains(req.Args[1], "check auth") {
 		t.Errorf("review prompt = %q", req.Args[1])
+	}
+	// The diff rides on stdin (argv has a per-argument size limit), not in
+	// the prompt argument.
+	if !strings.HasPrefix(req.Stdin, "--- diff ---\n") || strings.Contains(req.Args[1], "--- diff ---\n$ git") {
+		t.Errorf("diff must be passed via stdin: stdin=%q arg=%q", req.Stdin, req.Args[1])
 	}
 	if req.MaxOutputBytes != 0 {
 		t.Errorf("structured peer output must not be pre-truncated, got cap %d", req.MaxOutputBytes)
 	}
 	// hostrunner computed the diff itself with read-only git, since the
-	// claude peer has no shell.
+	// claude peer has no shell; "--" ends option parsing after the ref.
 	var gitCalls []string
 	for _, q := range r.all() {
 		if q.Command == "git" {
 			gitCalls = append(gitCalls, strings.Join(q.Args, " "))
 		}
 	}
-	if strings.Join(gitCalls, ";") != "diff main...HEAD" {
+	if strings.Join(gitCalls, ";") != "diff main...HEAD --" {
 		t.Errorf("git calls = %v", gitCalls)
+	}
+}
+
+func TestReviewStartRejectsOptionLikeRefs(t *testing.T) {
+	s, repo := newSvc(t, &recordingRunner{reply: exec.Result{Stdout: claudeJSON}})
+	for _, c := range []struct{ scope, base, commit string }{
+		{"commit", "", "--output=/tmp/pwned"},
+		{"base", "-p", ""},
+		{"base", "main --output=x", ""},
+	} {
+		for _, a := range []string{"claude", "codex"} {
+			out, isErr := s.ReviewStart(context.Background(), a, repo, c.scope, c.base, c.commit, "")
+			if !isErr || !strings.Contains(out, "invalid") {
+				t.Errorf("%s %+v: want rejection, got %q isErr=%v", a, c, out, isErr)
+			}
+		}
 	}
 }
 
 func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 	r := &scriptedRunner{replies: map[string]exec.Result{
 		"git status --short --untracked-files=all": {Stdout: "?? new.go\n"},
-		"git diff HEAD": {Stdout: "+++ b/new.go\n"},
+		"git diff HEAD --":                         {Stdout: "+++ b/new.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
 	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "")
@@ -239,14 +260,35 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 	if isErr {
 		t.Fatalf("status: %q", got)
 	}
-	prompt := r.last().Args[1]
-	if !strings.Contains(prompt, "?? new.go") || !strings.Contains(prompt, "+++ b/new.go") {
-		t.Errorf("prompt should embed status and diff: %q", prompt)
+	in := r.last().Stdin
+	if !strings.Contains(in, "?? new.go") || !strings.Contains(in, "+++ b/new.go") {
+		t.Errorf("stdin should carry status and diff: %q", in)
+	}
+	var gitCalls []string
+	for _, q := range r.all() {
+		if q.Command == "git" {
+			gitCalls = append(gitCalls, strings.Join(q.Args, " "))
+		}
+	}
+	if want := "rev-parse --verify --quiet HEAD;status --short --untracked-files=all;diff HEAD --"; strings.Join(gitCalls, ";") != want {
+		t.Errorf("git calls = %v", gitCalls)
+	}
+
+	// Unborn HEAD (no commits yet): diff against the empty tree instead.
+	r3 := &scriptedRunner{replies: map[string]exec.Result{
+		"git rev-parse --verify --quiet HEAD": {ExitCode: 1},
+		"git diff " + emptyTree + " --":       {Stdout: "+++ b/first.go\n"},
+	}, fallback: exec.Result{Stdout: claudeJSON}}
+	s3, repo3 := newSvc(t, r3)
+	out, _ = s3.ReviewStart(context.Background(), "claude", repo3, "", "", "", "")
+	got, isErr = waitStatus(t, s3, jobID(t, out))
+	if isErr || !strings.Contains(r3.last().Stdin, "+++ b/first.go") {
+		t.Errorf("unborn HEAD should fall back to the empty tree: %q isErr=%v stdin=%q", got, isErr, r3.last().Stdin)
 	}
 
 	// A failing git command aborts the job before the peer runs.
 	r2 := &scriptedRunner{replies: map[string]exec.Result{
-		"git diff main...HEAD": {ExitCode: 128, Stderr: "fatal: bad revision"},
+		"git diff main...HEAD --": {ExitCode: 128, Stderr: "fatal: bad revision"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s2, repo2 := newSvc(t, r2)
 	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "base", "main", "", "")

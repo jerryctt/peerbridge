@@ -7,10 +7,11 @@
 #   options: --version X.Y.Z   --server-name NAME (default hostrunner)
 #
 # What it does (idempotent):
-#   1. places the binary (downloaded + checksum-verified, or --local) and links
-#      it at ~/.local/bin/hostrunner
+#   1. fetches the binary (downloaded + checksum-verified, or --local)
 #   2. writes a [mcp_servers.<name>] block into ~/.codex/config.toml
-#      (replacing a previous hostrunner block, leaving the rest untouched)
+#      (replacing a previous managed block, leaving the rest untouched;
+#      refuses if an unmanaged [mcp_servers.<name>] table already exists)
+#      and links the binary at ~/.local/bin/hostrunner
 #   3. copies skills/peer-review and skills/peer-chat into ~/.agents/skills/
 #   4. creates ~/.config/hostrunner/config.yaml from the example if missing
 set -eu
@@ -40,9 +41,6 @@ if [ -n "$LOCAL" ]; then
 else
   BIN="$(hostrunner_ensure_binary "$VER")"
 fi
-mkdir -p "$HOME/.local/bin"
-ln -sf "$BIN" "$HOME/.local/bin/hostrunner"
-echo "binary: $HOME/.local/bin/hostrunner -> $BIN"
 
 # 2. ~/.codex/config.toml
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
@@ -63,6 +61,14 @@ awk -v b="$BEGIN" -v e="$END" '
     for (i = 1; i <= n; i++) print lines[i]
   }
 ' "$CFG" > "$tmp"
+# A hand-written [mcp_servers.<name>] table outside our markers would become a
+# duplicate TOML table and invalidate the whole config. Refuse rather than guess.
+if grep -Eq "^[[:space:]]*\[mcp_servers\.$NAME(\.[A-Za-z0-9_-]+)?\][[:space:]]*$" "$tmp"; then
+  rm -f "$tmp"
+  echo "error: $CFG already defines [mcp_servers.$NAME] outside the block managed by this installer." >&2
+  echo "       Remove that table (or re-run with --server-name <other>) and try again. Nothing was changed." >&2
+  exit 1
+fi
 mv "$tmp" "$CFG"
 cat >> "$CFG" <<EOF
 
@@ -76,6 +82,10 @@ startup_timeout_sec = 20
 $END
 EOF
 echo "codex config: [mcp_servers.$NAME] written to $CFG"
+
+mkdir -p "$HOME/.local/bin"
+ln -sf "$BIN" "$HOME/.local/bin/hostrunner"
+echo "binary: $HOME/.local/bin/hostrunner -> $BIN"
 
 # 3. skills
 SKILLS="$HOME/.agents/skills"

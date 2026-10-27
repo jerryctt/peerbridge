@@ -17,6 +17,12 @@ func TestScopeSentence(t *testing.T) {
 		{"base", "", "", "", true},
 		{"commit", "", "", "", true},
 		{"weird", "", "", "", true},
+		// option injection: refs must never start with '-' or carry odd chars
+		{"base", "--output=/tmp/x", "", "", true},
+		{"commit", "", "-p", "", true},
+		{"base", "main; rm -rf /", "", "", true},
+		{"base", "origin/feature-1.2_x", "", "against base branch origin/feature-1.2_x", false},
+		{"commit", "", "HEAD~2^", "introduced by commit HEAD~2^", false},
 	}
 	for _, c := range cases {
 		got, err := ScopeSentence(c.scope, c.base, c.commit)

@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -53,6 +54,24 @@ type Backend interface {
 	ParseChat(stdout string) (reply, sessionID string, err error)
 }
 
+// refPattern is the set of git revision spellings we accept: refs, SHAs,
+// and the usual suffixes (origin/main, v1.2.0, HEAD~3, abc123^, a...b). It
+// deliberately excludes a leading '-' so a caller-supplied value can never
+// be parsed as an option by git or by the peer CLI.
+var refPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._/@^~+-]*$`)
+
+// ValidateRef rejects revisions that are empty, option-like, or contain
+// characters outside refPattern.
+func ValidateRef(kind, ref string) error {
+	if ref == "" {
+		return fmt.Errorf("mode=%s requires a %s", kind, map[string]string{"base": "base ref", "commit": "commit sha"}[kind])
+	}
+	if strings.HasPrefix(ref, "-") || !refPattern.MatchString(ref) {
+		return fmt.Errorf("invalid %s %q: must be a git revision (letters, digits, . _ / @ ^ ~ + -) and must not start with '-'", kind, ref)
+	}
+	return nil
+}
+
 // ScopeSentence describes the review scope in prose and validates the
 // scope/base/commit combination. The wording is shared by both backends.
 func ScopeSentence(scope, base, commit string) (string, error) {
@@ -60,13 +79,13 @@ func ScopeSentence(scope, base, commit string) (string, error) {
 	case "", "uncommitted":
 		return "Review the uncommitted changes (staged, unstaged, and untracked).", nil
 	case "base":
-		if base == "" {
-			return "", fmt.Errorf("mode=base requires a base ref")
+		if err := ValidateRef("base", base); err != nil {
+			return "", err
 		}
 		return fmt.Sprintf("Review the changes against base branch %s.", base), nil
 	case "commit":
-		if commit == "" {
-			return "", fmt.Errorf("mode=commit requires a commit sha")
+		if err := ValidateRef("commit", commit); err != nil {
+			return "", err
 		}
 		return fmt.Sprintf("Review the changes introduced by commit %s.", commit), nil
 	default:
@@ -75,7 +94,7 @@ func ScopeSentence(scope, base, commit string) (string, error) {
 }
 
 const reviewInstructions = "You are a read-only code reviewer working in the current repository. " +
-	"The diff under review is appended below after a line reading '--- diff ---'; use the Read, Grep and Glob tools to inspect surrounding code as needed (you have no shell). " +
+	"The diff under review is provided as attached input (it begins with a line reading '--- diff ---'); use the Read, Grep and Glob tools to inspect surrounding code as needed (you have no shell). " +
 	"Do not modify anything. " +
 	"Report concrete bugs, regressions, security problems and risky assumptions, each with file path and line reference, ordered by severity, and explain briefly why each matters. " +
 	"Skip style nits unless asked. If you find no issues, say so explicitly."
