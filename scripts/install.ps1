@@ -288,6 +288,23 @@ if ($Claude) {
     $entryObj = New-Object PSObject
     $entryObj | Add-Member NoteProperty command $bin
     $entryObj | Add-Member NoteProperty args @("-config", $hrConfig)
+    # Upgrade from the pre-rename installer: drop a leftover mcpServers.hostrunner
+    # entry only when it points at a binary this installer managed (…\hostrunner\hostrunner.exe
+    # under %LOCALAPPDATA%, or the old cache dir), never a custom registration.
+    $legacyProp = $servers.PSObject.Properties["hostrunner"]
+    if ($ServerName -ne "hostrunner" -and $null -ne $legacyProp) {
+      $legacyCmd = [string]$legacyProp.Value.command
+      $managedDirs = @((Join-Path $home_ ".local/share/hostrunner"), (Join-Path $home_ ".cache/hostrunner"))
+      if ($env:LOCALAPPDATA) { $managedDirs += Join-Path $env:LOCALAPPDATA "hostrunner" }
+      $isManaged = $false
+      foreach ($d in $managedDirs) { if ($d -and $legacyCmd.StartsWith($d, [System.StringComparison]::OrdinalIgnoreCase)) { $isManaged = $true } }
+      if ($isManaged) {
+        $servers.PSObject.Properties.Remove("hostrunner")
+        Write-Host "claude desktop: removed legacy mcpServers.hostrunner entry ($legacyCmd)"
+      } else {
+        Write-Host "claude desktop: keeping mcpServers.hostrunner ($legacyCmd) - it does not point at an installer-managed binary; remove it by hand if it is obsolete"
+      }
+    }
     if ($null -ne $servers.PSObject.Properties[$ServerName]) {
       $servers.$ServerName = $entryObj
     } else {
