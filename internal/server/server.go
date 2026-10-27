@@ -340,15 +340,19 @@ func (s *Service) git(ctx context.Context, dir string, extraEnv []string, args .
 
 var filterKeyPattern = regexp.MustCompile(`^filter\.(.+)\.(clean|smudge|process|required)$`)
 
-// filterOverrides neutralises clean/smudge/process filter drivers defined in
-// the repository's own .git/config (global/system config is already ignored
-// via gitEnv). Worktree diffs run clean filters to normalise file contents,
-// and a filter is an arbitrary program; .gitattributes can only *select* a
-// driver, so emptying every configured driver is sufficient. The overrides
-// are passed as GIT_CONFIG_COUNT/KEY/VALUE env (git >= 2.31), which wins over
-// every config file.
+// filterOverrides neutralises clean/smudge/process filter drivers the
+// repository configures. Worktree diffs run clean filters to normalise file
+// contents, and a filter is an arbitrary program; .gitattributes can only
+// *select* a driver, so emptying every configured driver is sufficient.
+//
+// The probe runs without a scope flag, under the same isolated env the later
+// commands use, so it sees exactly what they will: repo-local config, the
+// worktree config (extensions.worktreeConfig) and anything pulled in through
+// include/includeIf — while global/system are /dev/null. The overrides are
+// passed as GIT_CONFIG_COUNT/KEY/VALUE env (git >= 2.31), which has the
+// highest precedence of all config sources.
 func (s *Service) filterOverrides(ctx context.Context, dir string) ([]string, error) {
-	res, err := s.git(ctx, dir, nil, "config", "--local", "--name-only", "--get-regexp", `^filter\.`)
+	res, err := s.git(ctx, dir, nil, "config", "--name-only", "--get-regexp", `^filter\.`)
 	if err != nil {
 		return nil, fmt.Errorf("git config: %w", err)
 	}

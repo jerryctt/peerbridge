@@ -219,7 +219,7 @@ func TestReviewStartCodexFailureIncludesStderr(t *testing.T) {
 }
 
 // filterProbe is the git call that discovers repo-local filter drivers.
-const filterProbe = `config --local --name-only --get-regexp ^filter\.`
+const filterProbe = `config --name-only --get-regexp ^filter\.`
 
 func TestReviewDisablesRepoLocalFilters(t *testing.T) {
 	r := &scriptedRunner{replies: map[string]exec.Result{
