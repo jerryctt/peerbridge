@@ -3,15 +3,75 @@ package exec
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
+// The tests re-execute this test binary as a helper process (the pattern
+// os/exec itself uses), so they need no printf/cat/sh/sleep and run the same
+// on Linux, macOS and Windows. The helper's behaviour is selected by argv:
+//
+//	echo <text>      write text to stdout
+//	cat              copy stdin to stdout
+//	env <NAME>       print the value of environment variable NAME
+//	exit <code>      exit with code
+//	sleep <seconds>  sleep (and ignore nothing — the test kills it)
+func TestMain(m *testing.M) {
+	if os.Getenv("HOSTRUNNER_EXEC_HELPER") != "1" {
+		os.Exit(m.Run())
+	}
+	args := os.Args[1:]
+	// Strip go test flags that precede our marker when re-exec'd.
+	for i, a := range args {
+		if a == "--" {
+			args = args[i+1:]
+			break
+		}
+	}
+	if len(args) == 0 {
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "echo":
+		fmt.Fprint(os.Stdout, strings.Join(args[1:], " "))
+	case "cat":
+		_, _ = io.Copy(os.Stdout, os.Stdin)
+	case "env":
+		fmt.Fprint(os.Stdout, os.Getenv(args[1]))
+	case "exit":
+		code, _ := strconv.Atoi(args[1])
+		os.Exit(code)
+	case "sleep":
+		secs, _ := strconv.Atoi(args[1])
+		time.Sleep(time.Duration(secs) * time.Second)
+	default:
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+// helper returns a Request that runs this test binary in helper mode.
+func helper(t *testing.T, args ...string) Request {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Request{
+		Command:        exe,
+		Args:           append([]string{"-test.run=^$", "--"}, args...),
+		Env:            []string{"HOSTRUNNER_EXEC_HELPER=1"},
+		MaxOutputBytes: 1000,
+	}
+}
+
 func TestRunCapturesStdoutAndExit(t *testing.T) {
-	r, err := Run(context.Background(), Request{
-		Command: "printf", Args: []string{"hello"}, MaxOutputBytes: 1000,
-	})
+	r, err := Run(context.Background(), helper(t, "echo", "hello"))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -21,21 +81,21 @@ func TestRunCapturesStdoutAndExit(t *testing.T) {
 }
 
 func TestRunAppendsEnv(t *testing.T) {
-	r, err := Run(context.Background(), Request{
-		Command: "sh", Args: []string{"-c", "echo $HOSTRUNNER_TEST_VAR"}, Env: []string{"HOSTRUNNER_TEST_VAR=from-request"}, MaxOutputBytes: 1000,
-	})
+	req := helper(t, "env", "HOSTRUNNER_TEST_VAR")
+	req.Env = append(req.Env, "HOSTRUNNER_TEST_VAR=from-request")
+	r, err := Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if strings.TrimSpace(r.Stdout) != "from-request" {
+	if r.Stdout != "from-request" {
 		t.Errorf("env not applied, stdout=%q", r.Stdout)
 	}
 }
 
 func TestRunFeedsStdin(t *testing.T) {
-	r, err := Run(context.Background(), Request{
-		Command: "cat", Stdin: "piped-input", MaxOutputBytes: 1000,
-	})
+	req := helper(t, "cat")
+	req.Stdin = "piped-input"
+	r, err := Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -45,9 +105,7 @@ func TestRunFeedsStdin(t *testing.T) {
 }
 
 func TestRunNonZeroExit(t *testing.T) {
-	r, err := Run(context.Background(), Request{
-		Command: "sh", Args: []string{"-c", "exit 3"}, MaxOutputBytes: 1000,
-	})
+	r, err := Run(context.Background(), helper(t, "exit", "3"))
 	if err != nil {
 		t.Fatalf("Run should not error on non-zero exit: %v", err)
 	}
@@ -58,24 +116,24 @@ func TestRunNonZeroExit(t *testing.T) {
 
 func TestRunTimeoutKills(t *testing.T) {
 	start := time.Now()
-	r, err := Run(context.Background(), Request{
-		Command: "sleep", Args: []string{"5"}, Timeout: 150 * time.Millisecond, MaxOutputBytes: 1000,
-	})
+	req := helper(t, "sleep", "5")
+	req.Timeout = 150 * time.Millisecond
+	r, err := Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !r.TimedOut {
 		t.Errorf("expected TimedOut")
 	}
-	if time.Since(start) > 2*time.Second {
+	if time.Since(start) > 3*time.Second {
 		t.Errorf("did not kill promptly")
 	}
 }
 
 func TestRunTruncates(t *testing.T) {
-	r, err := Run(context.Background(), Request{
-		Command: "printf", Args: []string{"abcdefghij"}, MaxOutputBytes: 4,
-	})
+	req := helper(t, "echo", "abcdefghij")
+	req.MaxOutputBytes = 4
+	r, err := Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -86,12 +144,9 @@ func TestRunTruncates(t *testing.T) {
 
 func TestRunStreamsToWriter(t *testing.T) {
 	var stream bytes.Buffer
-	r, err := Run(context.Background(), Request{
-		Command:        "printf",
-		Args:           []string{"hello"},
-		StreamTo:       &stream,
-		MaxOutputBytes: 1000,
-	})
+	req := helper(t, "echo", "hello")
+	req.StreamTo = &stream
+	r, err := Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

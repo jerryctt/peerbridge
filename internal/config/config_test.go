@@ -51,8 +51,9 @@ func TestResolveAllowedDir(t *testing.T) {
 		t.Errorf("expected resolved path")
 	}
 
-	if _, err := c.ResolveAllowedDir("/etc"); err == nil {
-		t.Errorf("outside root should fail")
+	outside := t.TempDir()
+	if _, err := c.ResolveAllowedDir(outside); err == nil || !strings.Contains(err.Error(), "allowed_root") {
+		t.Errorf("outside root should fail with an allowed_root error, got %v", err)
 	}
 	if _, err := c.ResolveAllowedDir("/sessions/x/mnt/proj"); err == nil {
 		t.Errorf("sandbox path should fail")

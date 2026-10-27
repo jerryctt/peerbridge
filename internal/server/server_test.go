@@ -492,7 +492,9 @@ func TestChatParseFailureIsJobError(t *testing.T) {
 
 func TestStartValidatesUpfront(t *testing.T) {
 	s, repo := newSvc(t, &fakeRunner{})
-	if out, isErr := s.ReviewStart(context.Background(), "codex", "/etc", "uncommitted", "", "", ""); !isErr || !strings.Contains(out, "allowed_root") {
+	// An existing directory outside allowed_roots (portable: not /etc, which
+	// does not exist on Windows and would fail for a different reason).
+	if out, isErr := s.ReviewStart(context.Background(), "codex", t.TempDir(), "uncommitted", "", "", ""); !isErr || !strings.Contains(out, "allowed_root") {
 		t.Errorf("outside root: %q %v", out, isErr)
 	}
 	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "base", "", "", ""); !isErr || !strings.Contains(out, "base") {

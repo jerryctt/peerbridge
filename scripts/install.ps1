@@ -187,12 +187,14 @@ if ($Codex) {
 
   $backup = "$cfg.bak.hostrunner"
   Copy-Item -Force $cfg $backup
-  # TOML literal string ('...') needs no backslash escaping.
+  # TOML basic string: escape backslash and double quote so any path (including
+  # ones with apostrophes, e.g. C:\Users\O'Brien) stays valid.
+  $tomlBin = '"' + (($bin -replace '\\', '\\') -replace '"', '\"') + '"'
   $block = @(
     "",
     $begin,
     "[mcp_servers.$ServerName]",
-    "command = '$bin'",
+    "command = $tomlBin",
     "args = []",
     "# review/chat jobs are polled via job_status (each call blocks <= 50s)",
     "tool_timeout_sec = 120",
