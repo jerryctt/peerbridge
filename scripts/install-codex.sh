@@ -68,12 +68,13 @@ awk -v b="$BEGIN" -v e="$END" '
 #   mcp_servers.NAME.command = "..."   (dotted key at top level)
 #   [mcp_servers] followed by a NAME = { ... } key (inline table)
 Q="[\"']?"
-HDR="^[[:space:]]*\[[[:space:]]*mcp_servers[[:space:]]*\.[[:space:]]*$Q$NAME$Q[[:space:]]*(\.[^]]*)?\][[:space:]]*(#.*)?$"
-DOTTED="^[[:space:]]*mcp_servers[[:space:]]*\.[[:space:]]*$Q$NAME$Q[[:space:]]*[.=]"
+PARENT="$Q"'mcp_servers'"$Q"
+HDR="^[[:space:]]*\[[[:space:]]*$PARENT[[:space:]]*\.[[:space:]]*$Q$NAME$Q[[:space:]]*(\.[^]]*)?\][[:space:]]*(#.*)?$"
+DOTTED="^[[:space:]]*$PARENT[[:space:]]*\.[[:space:]]*$Q$NAME$Q[[:space:]]*[.=]"
 conflict=0
 if grep -Eq "$HDR" "$tmp" || grep -Eq "$DOTTED" "$tmp"; then
   conflict=1
-elif grep -Eq "^[[:space:]]*\[[[:space:]]*mcp_servers[[:space:]]*\][[:space:]]*(#.*)?$" "$tmp" \
+elif grep -Eq "^[[:space:]]*\[[[:space:]]*$PARENT[[:space:]]*\][[:space:]]*(#.*)?$" "$tmp" \
   && grep -Eq "^[[:space:]]*$Q$NAME$Q[[:space:]]*=" "$tmp"; then
   conflict=1
 fi
@@ -83,6 +84,8 @@ if [ "$conflict" = 1 ]; then
   echo "       Remove that definition (or re-run with --server-name <other>) and try again. Nothing was changed." >&2
   exit 1
 fi
+BACKUP="$CFG.bak.hostrunner"
+cp "$CFG" "$BACKUP"
 mv "$tmp" "$CFG"
 cat >> "$CFG" <<EOF
 
@@ -95,6 +98,18 @@ tool_timeout_sec = 120
 startup_timeout_sec = 20
 $END
 EOF
+# Validate with codex itself when available; restore the original on failure.
+if command -v codex >/dev/null 2>&1; then
+  if ! codex mcp list >/dev/null 2>"$BACKUP.err"; then
+    cp "$BACKUP" "$CFG"
+    echo "error: codex rejected the updated $CFG; original restored. codex said:" >&2
+    sed 's/^/    /' "$BACKUP.err" >&2
+    rm -f "$BACKUP" "$BACKUP.err"
+    exit 1
+  fi
+  rm -f "$BACKUP.err"
+fi
+rm -f "$BACKUP"
 echo "codex config: [mcp_servers.$NAME] written to $CFG"
 
 LINK="$HOME/.local/bin/hostrunner"

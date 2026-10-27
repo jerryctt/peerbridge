@@ -284,8 +284,9 @@ func TestReviewStartRejectsOptionLikeRefs(t *testing.T) {
 
 func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 	r := &scriptedRunner{replies: map[string]exec.Result{
-		gitKey("status --short --untracked-files=all"):     {Stdout: "?? new.go\n"},
-		gitKey("diff --no-ext-diff --no-textconv HEAD --"): {Stdout: "+++ b/new.go\n"},
+		gitKey("status --short --untracked-files=all"):              {Stdout: "?? new.go\n"},
+		gitKey("diff --no-ext-diff --no-textconv --cached HEAD --"): {Stdout: "+++ b/staged.go\n"},
+		gitKey("diff --no-ext-diff --no-textconv --"):               {Stdout: "+++ b/new.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
 	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "")
@@ -294,18 +295,18 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 		t.Fatalf("status: %q", got)
 	}
 	in := r.last().Stdin
-	if !strings.Contains(in, "?? new.go") || !strings.Contains(in, "+++ b/new.go") {
-		t.Errorf("stdin should carry status and diff: %q", in)
+	if !strings.Contains(in, "?? new.go") || !strings.Contains(in, "+++ b/new.go") || !strings.Contains(in, "+++ b/staged.go") {
+		t.Errorf("stdin should carry status, staged and unstaged diffs: %q", in)
 	}
 	gitCalls := gitCalls(t, r.all())
-	if want := "rev-parse --verify --quiet HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv HEAD --"; strings.Join(gitCalls, ";") != want {
+	if want := "rev-parse --verify --quiet HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv --cached HEAD --;diff --no-ext-diff --no-textconv --"; strings.Join(gitCalls, ";") != want {
 		t.Errorf("git calls = %v", gitCalls)
 	}
 
 	// Unborn HEAD (no commits yet): diff against the empty tree instead.
 	r3 := &scriptedRunner{replies: map[string]exec.Result{
-		gitKey("rev-parse --verify --quiet HEAD"):                       {ExitCode: 1},
-		gitKey("diff --no-ext-diff --no-textconv " + emptyTree + " --"): {Stdout: "+++ b/first.go\n"},
+		gitKey("rev-parse --verify --quiet HEAD"):                                {ExitCode: 1},
+		gitKey("diff --no-ext-diff --no-textconv --cached " + emptyTree + " --"): {Stdout: "+++ b/first.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s3, repo3 := newSvc(t, r3)
 	out, _ = s3.ReviewStart(context.Background(), "claude", repo3, "", "", "", "")

@@ -356,7 +356,14 @@ func gitArgs(scope, base, commit string, headUnborn bool) [][]string {
 		if headUnborn {
 			head = emptyTree
 		}
-		return [][]string{{"status", "--short", "--untracked-files=all"}, {"diff", safe1, safe2, head, "--"}}
+		// Staged (index vs HEAD) and unstaged (worktree vs index) separately:
+		// a single `diff HEAD` hides a staged change that was reverted in the
+		// worktree, and the peer has no shell to look at the index itself.
+		return [][]string{
+			{"status", "--short", "--untracked-files=all"},
+			{"diff", safe1, safe2, "--cached", head, "--"},
+			{"diff", safe1, safe2, "--"},
+		}
 	}
 }
 
