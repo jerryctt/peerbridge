@@ -240,6 +240,9 @@ func (s *Service) ChatStart(ctx context.Context, agentName, folder, message, ses
 	if strings.TrimSpace(message) == "" {
 		return "message must not be empty", true
 	}
+	if err := agent.ValidateSessionID(sessionID); err != nil {
+		return err.Error(), true
+	}
 	j, err := s.Jobs.add(dir, b.Name(), agent.KindChat, "")
 	if err != nil {
 		return err.Error(), true
@@ -317,18 +320,23 @@ func (s *Service) git(ctx context.Context, dir string, args ...string) (exec.Res
 // claude peer has no shell, so hostrunner computes the diff for it. Refs were
 // validated by agent.ValidateRef (never option-like); the trailing "--" ends
 // option parsing anyway so a ref can only ever be a revision.
+//
+// --no-ext-diff and --no-textconv keep git from running diff.external or
+// textconv helpers from the user's or repo's git config: those would execute
+// arbitrary programs on the host outside any peer sandbox.
 func gitArgs(scope, base, commit string, headUnborn bool) [][]string {
+	const safe1, safe2 = "--no-ext-diff", "--no-textconv"
 	switch scope {
 	case "base":
-		return [][]string{{"diff", base + "...HEAD", "--"}}
+		return [][]string{{"diff", safe1, safe2, base + "...HEAD", "--"}}
 	case "commit":
-		return [][]string{{"show", "--format=medium", commit, "--"}}
+		return [][]string{{"show", safe1, safe2, "--format=medium", commit, "--"}}
 	default: // uncommitted
 		head := "HEAD"
 		if headUnborn {
 			head = emptyTree
 		}
-		return [][]string{{"status", "--short", "--untracked-files=all"}, {"diff", head, "--"}}
+		return [][]string{{"status", "--short", "--untracked-files=all"}, {"diff", safe1, safe2, head, "--"}}
 	}
 }
 

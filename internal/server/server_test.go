@@ -206,16 +206,17 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 	req := r.last()
-	if req.Command != "claude" || req.Args[0] != "-p" {
+	promptArg := req.Args[len(req.Args)-1]
+	if req.Command != "claude" || req.Args[0] != "-p" || req.Args[len(req.Args)-2] != "--" {
 		t.Errorf("claude invocation = %v", req)
 	}
-	if !strings.Contains(req.Args[1], "base branch main") || !strings.Contains(req.Args[1], "check auth") {
-		t.Errorf("review prompt = %q", req.Args[1])
+	if !strings.Contains(promptArg, "base branch main") || !strings.Contains(promptArg, "check auth") {
+		t.Errorf("review prompt = %q", promptArg)
 	}
 	// The diff rides on stdin (argv has a per-argument size limit), not in
 	// the prompt argument.
-	if !strings.HasPrefix(req.Stdin, "--- diff ---\n") || strings.Contains(req.Args[1], "--- diff ---\n$ git") {
-		t.Errorf("diff must be passed via stdin: stdin=%q arg=%q", req.Stdin, req.Args[1])
+	if !strings.HasPrefix(req.Stdin, "--- diff ---\n") || strings.Contains(promptArg, "$ git") {
+		t.Errorf("diff must be passed via stdin: stdin=%q arg=%q", req.Stdin, promptArg)
 	}
 	if req.MaxOutputBytes != 0 {
 		t.Errorf("structured peer output must not be pre-truncated, got cap %d", req.MaxOutputBytes)
@@ -228,8 +229,18 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 			gitCalls = append(gitCalls, strings.Join(q.Args, " "))
 		}
 	}
-	if strings.Join(gitCalls, ";") != "diff main...HEAD --" {
+	if strings.Join(gitCalls, ";") != "diff --no-ext-diff --no-textconv main...HEAD --" {
 		t.Errorf("git calls = %v", gitCalls)
+	}
+}
+
+func TestChatStartRejectsOptionLikeSessionID(t *testing.T) {
+	s, repo := newSvc(t, &recordingRunner{reply: exec.Result{Stdout: codexJSONL}})
+	for _, bad := range []string{"--last", "-p", "a b"} {
+		out, isErr := s.ChatStart(context.Background(), "codex", repo, "hi", bad)
+		if !isErr || !strings.Contains(out, "invalid session_id") {
+			t.Errorf("%q: want rejection, got %q isErr=%v", bad, out, isErr)
+		}
 	}
 }
 
@@ -251,8 +262,8 @@ func TestReviewStartRejectsOptionLikeRefs(t *testing.T) {
 
 func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 	r := &scriptedRunner{replies: map[string]exec.Result{
-		"git status --short --untracked-files=all": {Stdout: "?? new.go\n"},
-		"git diff HEAD --":                         {Stdout: "+++ b/new.go\n"},
+		"git status --short --untracked-files=all":     {Stdout: "?? new.go\n"},
+		"git diff --no-ext-diff --no-textconv HEAD --": {Stdout: "+++ b/new.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
 	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "")
@@ -270,14 +281,14 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 			gitCalls = append(gitCalls, strings.Join(q.Args, " "))
 		}
 	}
-	if want := "rev-parse --verify --quiet HEAD;status --short --untracked-files=all;diff HEAD --"; strings.Join(gitCalls, ";") != want {
+	if want := "rev-parse --verify --quiet HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv HEAD --"; strings.Join(gitCalls, ";") != want {
 		t.Errorf("git calls = %v", gitCalls)
 	}
 
 	// Unborn HEAD (no commits yet): diff against the empty tree instead.
 	r3 := &scriptedRunner{replies: map[string]exec.Result{
-		"git rev-parse --verify --quiet HEAD": {ExitCode: 1},
-		"git diff " + emptyTree + " --":       {Stdout: "+++ b/first.go\n"},
+		"git rev-parse --verify --quiet HEAD":                       {ExitCode: 1},
+		"git diff --no-ext-diff --no-textconv " + emptyTree + " --": {Stdout: "+++ b/first.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s3, repo3 := newSvc(t, r3)
 	out, _ = s3.ReviewStart(context.Background(), "claude", repo3, "", "", "", "")
@@ -288,7 +299,7 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 
 	// A failing git command aborts the job before the peer runs.
 	r2 := &scriptedRunner{replies: map[string]exec.Result{
-		"git diff main...HEAD --": {ExitCode: 128, Stderr: "fatal: bad revision"},
+		"git diff --no-ext-diff --no-textconv main...HEAD --": {ExitCode: 128, Stderr: "fatal: bad revision"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s2, repo2 := newSvc(t, r2)
 	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "base", "main", "", "")

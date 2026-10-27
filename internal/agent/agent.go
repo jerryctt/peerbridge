@@ -72,6 +72,22 @@ func ValidateRef(kind, ref string) error {
 	return nil
 }
 
+// sessionPattern accepts UUIDs and the thread names/ids the CLIs hand out;
+// like refPattern it forbids a leading '-' so an id can never be an option.
+var sessionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ValidateSessionID rejects option-like or otherwise malformed session ids.
+// Empty is allowed (it means "start a new session").
+func ValidateSessionID(id string) error {
+	if id == "" {
+		return nil
+	}
+	if !sessionPattern.MatchString(id) {
+		return fmt.Errorf("invalid session_id %q: expected a UUID or thread id (letters, digits, . _ -), not starting with '-'", id)
+	}
+	return nil
+}
+
 // ScopeSentence describes the review scope in prose and validates the
 // scope/base/commit combination. The wording is shared by both backends.
 func ScopeSentence(scope, base, commit string) (string, error) {

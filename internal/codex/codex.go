@@ -86,6 +86,9 @@ func (b *Backend) ChatArgs(message, sessionID string) []string {
 		args = []string{"exec", "resume", "--json", "--skip-git-repo-check", "--ignore-user-config", "-c", `sandbox_mode="read-only"`}
 	}
 	args = append(args, b.s.ExtraArgs...)
+	// "--" ends option parsing so caller-supplied text (a message that happens
+	// to start with "--", an odd session id) is always a positional.
+	args = append(args, "--")
 	if sessionID != "" {
 		args = append(args, sessionID)
 	}

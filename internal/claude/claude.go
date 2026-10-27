@@ -50,11 +50,12 @@ const deniedTools = "Edit,Write,NotebookEdit,Bash"
 //   - --permission-mode dontAsk denies anything not allowlisted without
 //     prompting, so the non-interactive run can never hang.
 //
-// The message is passed immediately after -p so that no later list-valued
-// flag can consume it as a value.
+// The message goes last, after a "--" terminator, so it is always the prompt
+// positional even when it starts with "--" (and no list-valued flag can
+// consume it as a value).
 func (b *Backend) ChatArgs(message, sessionID string) []string {
 	args := []string{
-		"-p", message,
+		"-p",
 		"--strict-mcp-config",
 		"--setting-sources", "",
 		"--output-format", "json",
@@ -66,7 +67,8 @@ func (b *Backend) ChatArgs(message, sessionID string) []string {
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	}
-	return append(args, b.s.ExtraArgs...)
+	args = append(args, b.s.ExtraArgs...)
+	return append(args, "--", message)
 }
 
 type result struct {

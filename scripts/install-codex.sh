@@ -61,12 +61,26 @@ awk -v b="$BEGIN" -v e="$END" '
     for (i = 1; i <= n; i++) print lines[i]
   }
 ' "$CFG" > "$tmp"
-# A hand-written [mcp_servers.<name>] table outside our markers would become a
-# duplicate TOML table and invalidate the whole config. Refuse rather than guess.
-if grep -Eq "^[[:space:]]*\[mcp_servers\.$NAME(\.[A-Za-z0-9_-]+)?\][[:space:]]*$" "$tmp"; then
+# A hand-written definition of mcp_servers.<name> outside our markers would
+# become a duplicate TOML table and invalidate the whole config. Without a TOML
+# parser we match the spellings TOML allows and refuse on any of them:
+#   [mcp_servers.NAME]  [mcp_servers."NAME"]  [ mcp_servers . 'NAME' . env ]  # comment
+#   mcp_servers.NAME.command = "..."   (dotted key at top level)
+#   [mcp_servers] followed by a NAME = { ... } key (inline table)
+Q="[\"']?"
+HDR="^[[:space:]]*\[[[:space:]]*mcp_servers[[:space:]]*\.[[:space:]]*$Q$NAME$Q[[:space:]]*(\.[^]]*)?\][[:space:]]*(#.*)?$"
+DOTTED="^[[:space:]]*mcp_servers[[:space:]]*\.[[:space:]]*$Q$NAME$Q[[:space:]]*[.=]"
+conflict=0
+if grep -Eq "$HDR" "$tmp" || grep -Eq "$DOTTED" "$tmp"; then
+  conflict=1
+elif grep -Eq "^[[:space:]]*\[[[:space:]]*mcp_servers[[:space:]]*\][[:space:]]*(#.*)?$" "$tmp" \
+  && grep -Eq "^[[:space:]]*$Q$NAME$Q[[:space:]]*=" "$tmp"; then
+  conflict=1
+fi
+if [ "$conflict" = 1 ]; then
   rm -f "$tmp"
-  echo "error: $CFG already defines [mcp_servers.$NAME] outside the block managed by this installer." >&2
-  echo "       Remove that table (or re-run with --server-name <other>) and try again. Nothing was changed." >&2
+  echo "error: $CFG already defines mcp_servers.$NAME outside the block managed by this installer." >&2
+  echo "       Remove that definition (or re-run with --server-name <other>) and try again. Nothing was changed." >&2
   exit 1
 fi
 mv "$tmp" "$CFG"

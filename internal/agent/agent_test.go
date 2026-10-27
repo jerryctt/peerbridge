@@ -98,6 +98,19 @@ func TestRegistry(t *testing.T) {
 	}
 }
 
+func TestValidateSessionID(t *testing.T) {
+	for _, ok := range []string{"", "0199a-thread", "6c2f0a4e-1b2c-4d5e-8f90-abcdef123456", "my_thread.1"} {
+		if err := ValidateSessionID(ok); err != nil {
+			t.Errorf("%q should be valid: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"-p", "--last", "a b", "x;y", "id/with/slash"} {
+		if err := ValidateSessionID(bad); err == nil {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
+}
+
 func TestLabelAndTail(t *testing.T) {
 	if Label("codex") != "Codex" || Label("") != "" {
 		t.Error("Label wrong")

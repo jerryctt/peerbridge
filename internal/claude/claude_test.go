@@ -20,9 +20,9 @@ func TestReviewArgsIsNotNative(t *testing.T) {
 
 func TestChatArgs(t *testing.T) {
 	b := New(agent.Settings{Command: "claude", ExtraArgs: []string{"--model", "opus"}})
-	args := b.ChatArgs("critique this", "")
-	if args[0] != "-p" || args[1] != "critique this" {
-		t.Errorf("message must directly follow -p: %v", args)
+	args := b.ChatArgs("--help", "")
+	if args[0] != "-p" || args[len(args)-2] != "--" || args[len(args)-1] != "--help" {
+		t.Errorf("message must be the final positional after --: %v", args)
 	}
 	joined := strings.Join(args, "\x1f") // visible separator so the empty value is checkable
 	for _, want := range []string{
@@ -48,8 +48,8 @@ func TestChatArgs(t *testing.T) {
 		}
 	}
 	resumed := strings.Join(b.ChatArgs("again", "sess-1"), " ")
-	if !strings.Contains(resumed, "--resume sess-1") {
-		t.Errorf("resume missing: %q", resumed)
+	if !strings.Contains(resumed, "--resume sess-1 --model opus -- again") {
+		t.Errorf("resume/extra/terminator order wrong: %q", resumed)
 	}
 }
 
