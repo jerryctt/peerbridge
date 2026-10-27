@@ -189,13 +189,17 @@ if ($Codex) {
   Copy-Item -Force $cfg $backup
   # TOML basic string: escape backslash and double quote so any path (including
   # ones with apostrophes, e.g. C:\Users\O'Brien) stays valid.
-  $tomlBin = '"' + (($bin -replace '\\', '\\') -replace '"', '\"') + '"'
+  function ConvertTo-TomlString([string]$s) { '"' + (($s -replace '\\', '\\') -replace '"', '\"') + '"' }
+  $tomlBin = ConvertTo-TomlString $bin
+  # Pass -config explicitly so Codex and Claude Desktop use the same file this
+  # installer created, even if a ~/.config/hostrunner/config.yaml also exists.
+  $tomlCfg = ConvertTo-TomlString $hrConfig
   $block = @(
     "",
     $begin,
     "[mcp_servers.$ServerName]",
     "command = $tomlBin",
-    "args = []",
+    "args = [""-config"", $tomlCfg]",
     "# review/chat jobs are polled via job_status (each call blocks <= 50s)",
     "tool_timeout_sec = 120",
     "startup_timeout_sec = 20",
