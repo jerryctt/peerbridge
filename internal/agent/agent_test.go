@@ -80,11 +80,14 @@ func TestDefault(t *testing.T) {
 
 type stub struct{ name string }
 
-func (s stub) Name() string                                         { return s.name }
-func (s stub) Command() string                                      { return s.name }
-func (s stub) ReviewArgs(_, _, _, _ string) ([]string, bool, error) { return nil, false, nil }
-func (s stub) ChatArgs(_, _ string) []string                        { return nil }
-func (s stub) ParseChat(_ string) (string, string, error)           { return "", "", nil }
+func (s stub) Name() string    { return s.name }
+func (s stub) Command() string { return s.name }
+func (s stub) ReviewArgs(_, _, _, _ string, _ Options) ([]string, bool, error) {
+	return nil, false, nil
+}
+func (s stub) ChatArgs(_, _ string, _ Options) []string   { return nil }
+func (s stub) CheckOptions(Options) error                 { return nil }
+func (s stub) ParseChat(_ string) (string, string, error) { return "", "", nil }
 
 func TestRegistry(t *testing.T) {
 	r := Registry{"codex": stub{"codex"}, "claude": stub{"claude"}}
@@ -118,5 +121,18 @@ func TestLabelAndTail(t *testing.T) {
 	}
 	if Tail("abcdef", 3) != "def" || Tail("ab", 3) != "ab" {
 		t.Error("Tail wrong")
+	}
+}
+
+func TestValidateOptions(t *testing.T) {
+	for _, o := range []Options{{}, {Model: "opus"}, {Model: "gpt-5.5", Effort: "xhigh"}, {Model: "openai/gpt-x:latest"}, {Effort: "max"}} {
+		if err := ValidateOptions(o); err != nil {
+			t.Errorf("ValidateOptions(%+v) = %v, want nil", o, err)
+		}
+	}
+	for _, o := range []Options{{Model: "-m"}, {Model: `gpt"x`}, {Model: "a b"}, {Model: strings.Repeat("a", 101)}, {Effort: "ultracode"}, {Effort: "HIGH"}, {Effort: "minimal"}} {
+		if err := ValidateOptions(o); err == nil {
+			t.Errorf("ValidateOptions(%+v) = nil, want error", o)
+		}
 	}
 }

@@ -9,7 +9,7 @@
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Codex     # Codex only
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Claude    # Claude Desktop only
     ... -Local .\peerbridge.exe      use a locally built binary instead of downloading
-    ... -Version 0.5.0               pin a release (default: version in .claude-plugin\plugin.json)
+    ... -Version 0.6.0               pin a release (default: version in .claude-plugin\plugin.json)
     ... -ServerName peerbridge       MCP server name used in both configs
     ... -NoClaudeConfigWrite         print the Claude Desktop JSON snippet instead of merging it
 

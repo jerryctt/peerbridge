@@ -17,7 +17,8 @@ type Request struct {
 	Dir     string
 	Stdin   string
 	Timeout time.Duration
-	// MaxOutputBytes caps combined stdout/stderr output; 0 means unlimited.
+	// MaxOutputBytes caps captured stdout (the head is kept); 0 means
+	// unlimited. Stderr is capped separately: see StderrCap.
 	MaxOutputBytes int
 	// StreamTo, if non-nil, means stdout and stderr are also written here live,
 	// in addition to being captured in the Result.
@@ -27,14 +28,48 @@ type Request struct {
 	Env []string
 }
 
+// StderrCap bounds captured stderr. Only its tail is kept: the CLIs write a
+// verbose progress trace there and the error that matters comes last. It is
+// independent of MaxOutputBytes, which callers set to 0 when stdout is a
+// structured stream that must be parsed whole.
+const StderrCap = 64 << 10
+
 type Result struct {
 	Stdout string
 	Stderr string
 	// ExitCode is the process exit code; it is -1 when TimedOut is true.
-	ExitCode  int
-	Elapsed   time.Duration
-	TimedOut  bool
-	Truncated bool
+	ExitCode int
+	Elapsed  time.Duration
+	TimedOut bool
+	// StdoutTruncated reports that stdout exceeded MaxOutputBytes and was cut.
+	StdoutTruncated bool
+	// StderrTruncated reports that stderr exceeded StderrCap; Stderr then
+	// holds only its last StderrCap bytes.
+	StderrTruncated bool
+}
+
+// tailBuffer is an io.Writer that keeps only the last max bytes written.
+type tailBuffer struct {
+	max     int
+	buf     []byte
+	dropped bool
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	// Compact only once twice the cap is buffered, so trimming is amortised.
+	if len(t.buf) > 2*t.max {
+		t.buf = append([]byte(nil), t.buf[len(t.buf)-t.max:]...)
+		t.dropped = true
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) result() (string, bool) {
+	if len(t.buf) > t.max {
+		return string(t.buf[len(t.buf)-t.max:]), true
+	}
+	return string(t.buf), t.dropped
 }
 
 func Run(ctx context.Context, req Request) (Result, error) {
@@ -54,7 +89,8 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 	setSysProcAttr(cmd)
 
-	var out, errb bytes.Buffer
+	var out bytes.Buffer
+	errb := tailBuffer{max: StderrCap}
 	if req.StreamTo != nil {
 		cmd.Stdout = io.MultiWriter(&out, req.StreamTo)
 		cmd.Stderr = io.MultiWriter(&errb, req.StreamTo)
@@ -88,10 +124,8 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	res.Elapsed = time.Since(start)
 	res.ExitCode = cmd.ProcessState.ExitCode()
 
-	res.Stdout, res.Truncated = truncate(out.String(), req.MaxOutputBytes)
-	var st bool
-	res.Stderr, st = truncate(errb.String(), req.MaxOutputBytes)
-	res.Truncated = res.Truncated || st
+	res.Stdout, res.StdoutTruncated = truncate(out.String(), req.MaxOutputBytes)
+	res.Stderr, res.StderrTruncated = errb.result()
 	return res, nil
 }
 

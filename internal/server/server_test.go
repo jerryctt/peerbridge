@@ -180,7 +180,7 @@ func TestReviewStartCodexNative(t *testing.T) {
 	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
 		"codex review --uncommitted": {Stdout: "VERDICT_OK", Stderr: "NOISE_TRACE", ExitCode: 0},
 	}})
-	out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "")
+	out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{})
 	if isErr {
 		t.Fatalf("start: %q", out)
 	}
@@ -207,7 +207,7 @@ func TestReviewStartCodexFailureIncludesStderr(t *testing.T) {
 	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
 		"codex review --uncommitted": {Stdout: "partial", Stderr: "BOOM", ExitCode: 2},
 	}})
-	out, _ := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "")
+	out, _ := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{})
 	got, isErr := waitStatus(t, s, jobID(t, out))
 	if isErr {
 		t.Fatalf("expected non-error tool result, got error: %q", got)
@@ -225,7 +225,7 @@ func TestReviewDisablesRepoLocalFilters(t *testing.T) {
 		gitKey(filterProbe): {Stdout: "filter.lfs.clean\nfilter.lfs.smudge\nfilter.lfs.required\nfilter.my.sub.process\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
-	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "")
+	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "", agent.Options{})
 	if got, isErr := waitStatus(t, s, jobID(t, out)); isErr {
 		t.Fatalf("status: %q", got)
 	}
@@ -253,9 +253,9 @@ func TestReviewDisablesRepoLocalFilters(t *testing.T) {
 			t.Errorf("filter probe must be uncapped, got %d", q.MaxOutputBytes)
 		}
 	}
-	r4 := &scriptedRunner{replies: map[string]exec.Result{gitKey(filterProbe): {Stdout: "filter.a.clean\nfilter.b", Truncated: true}}, fallback: exec.Result{Stdout: claudeJSON}}
+	r4 := &scriptedRunner{replies: map[string]exec.Result{gitKey(filterProbe): {Stdout: "filter.a.clean\nfilter.b", StdoutTruncated: true}}, fallback: exec.Result{Stdout: claudeJSON}}
 	s4, repo4 := newSvc(t, r4)
-	out, _ = s4.ReviewStart(context.Background(), "claude", repo4, "uncommitted", "", "", "")
+	out, _ = s4.ReviewStart(context.Background(), "claude", repo4, "uncommitted", "", "", "", agent.Options{})
 	if got, isErr := waitStatus(t, s4, jobID(t, out)); !isErr || !strings.Contains(got, "truncated") {
 		t.Errorf("truncated probe must fail closed, got %q isErr=%v", got, isErr)
 	}
@@ -269,7 +269,7 @@ func TestReviewDisablesRepoLocalFilters(t *testing.T) {
 	// must add none.
 	r2 := &scriptedRunner{replies: map[string]exec.Result{gitKey(filterProbe): {ExitCode: 1}}, fallback: exec.Result{Stdout: claudeJSON}}
 	s2, repo2 := newSvc(t, r2)
-	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "uncommitted", "", "", "")
+	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "uncommitted", "", "", "", agent.Options{})
 	if got, isErr := waitStatus(t, s2, jobID(t, out)); isErr {
 		t.Fatalf("status: %q", got)
 	}
@@ -287,7 +287,7 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 		gitKey("merge-base main HEAD"): {Stdout: mergeBaseSHA + "\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
-	out, isErr := s.ReviewStart(context.Background(), "claude", repo, "base", "main", "", "check auth")
+	out, isErr := s.ReviewStart(context.Background(), "claude", repo, "base", "main", "", "check auth", agent.Options{})
 	if isErr {
 		t.Fatalf("start: %q", out)
 	}
@@ -327,7 +327,7 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 func TestChatStartRejectsOptionLikeSessionID(t *testing.T) {
 	s, repo := newSvc(t, &recordingRunner{reply: exec.Result{Stdout: codexJSONL}})
 	for _, bad := range []string{"--last", "-p", "a b"} {
-		out, isErr := s.ChatStart(context.Background(), "codex", repo, "hi", bad)
+		out, isErr := s.ChatStart(context.Background(), "codex", repo, "hi", bad, agent.Options{})
 		if !isErr || !strings.Contains(out, "invalid session_id") {
 			t.Errorf("%q: want rejection, got %q isErr=%v", bad, out, isErr)
 		}
@@ -342,7 +342,7 @@ func TestReviewStartRejectsOptionLikeRefs(t *testing.T) {
 		{"base", "main --output=x", ""},
 	} {
 		for _, a := range []string{"claude", "codex"} {
-			out, isErr := s.ReviewStart(context.Background(), a, repo, c.scope, c.base, c.commit, "")
+			out, isErr := s.ReviewStart(context.Background(), a, repo, c.scope, c.base, c.commit, "", agent.Options{})
 			if !isErr || !strings.Contains(out, "invalid") {
 				t.Errorf("%s %+v: want rejection, got %q isErr=%v", a, c, out, isErr)
 			}
@@ -357,7 +357,7 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 		gitKey("diff --no-ext-diff --no-textconv --"):               {Stdout: "+++ b/new.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
-	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "")
+	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "", agent.Options{})
 	got, isErr := waitStatus(t, s, jobID(t, out))
 	if isErr {
 		t.Fatalf("status: %q", got)
@@ -377,7 +377,7 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 		gitKey("diff --no-ext-diff --no-textconv --cached " + emptyTree + " --"): {Stdout: "+++ b/first.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s3, repo3 := newSvc(t, r3)
-	out, _ = s3.ReviewStart(context.Background(), "claude", repo3, "", "", "", "")
+	out, _ = s3.ReviewStart(context.Background(), "claude", repo3, "", "", "", "", agent.Options{})
 	got, isErr = waitStatus(t, s3, jobID(t, out))
 	if isErr || !strings.Contains(r3.last().Stdin, "+++ b/first.go") {
 		t.Errorf("unborn HEAD should fall back to the empty tree: %q isErr=%v stdin=%q", got, isErr, r3.last().Stdin)
@@ -388,7 +388,7 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 		gitKey("merge-base main HEAD"): {ExitCode: 128, Stderr: "fatal: bad revision"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s2, repo2 := newSvc(t, r2)
-	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "base", "main", "", "")
+	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "base", "main", "", "", agent.Options{})
 	got, isErr = waitStatus(t, s2, jobID(t, out))
 	if !isErr || !strings.Contains(got, "bad revision") {
 		t.Errorf("want git failure surfaced, got %q isErr=%v", got, isErr)
@@ -403,7 +403,7 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 func TestReviewCommitScopeUsesFirstParentDiff(t *testing.T) {
 	r := &scriptedRunner{replies: map[string]exec.Result{}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
-	out, _ := s.ReviewStart(context.Background(), "claude", repo, "commit", "", "abc123", "")
+	out, _ := s.ReviewStart(context.Background(), "claude", repo, "commit", "", "abc123", "", agent.Options{})
 	if got, isErr := waitStatus(t, s, jobID(t, out)); isErr {
 		t.Fatalf("status: %q", got)
 	}
@@ -415,10 +415,10 @@ func TestReviewCommitScopeUsesFirstParentDiff(t *testing.T) {
 
 func TestReviewWarnsWhenDiffTruncated(t *testing.T) {
 	r := &scriptedRunner{replies: map[string]exec.Result{
-		gitKey("diff --no-ext-diff --no-textconv --"): {Stdout: "+++ huge", Truncated: true},
+		gitKey("diff --no-ext-diff --no-textconv --"): {Stdout: "+++ huge", StdoutTruncated: true},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
-	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "")
+	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "", agent.Options{})
 	got, isErr := waitStatus(t, s, jobID(t, out))
 	if isErr {
 		t.Fatalf("status: %q", got)
@@ -435,7 +435,7 @@ func TestChatReplyIsCappedAfterParsing(t *testing.T) {
 	big := strings.Repeat("x", 5000)
 	r := &recordingRunner{reply: exec.Result{Stdout: `{"type":"result","is_error":false,"result":"` + big + `","session_id":"s1"}`}}
 	s, repo := newSvc(t, r) // MaxOutputBytes is 1000 in newCfg
-	out, _ := s.ChatStart(context.Background(), "claude", repo, "hi", "")
+	out, _ := s.ChatStart(context.Background(), "claude", repo, "hi", "", agent.Options{})
 	got, isErr := waitStatus(t, s, jobID(t, out))
 	if isErr {
 		t.Fatalf("status: %q", got)
@@ -451,7 +451,7 @@ func TestChatReplyIsCappedAfterParsing(t *testing.T) {
 func TestChatStartNewAndResume(t *testing.T) {
 	r := &recordingRunner{reply: exec.Result{Stdout: codexJSONL}}
 	s, repo := newSvc(t, r)
-	out, isErr := s.ChatStart(context.Background(), "codex", repo, "hello", "")
+	out, isErr := s.ChatStart(context.Background(), "codex", repo, "hello", "", agent.Options{})
 	if isErr {
 		t.Fatalf("start: %q", out)
 	}
@@ -468,7 +468,7 @@ func TestChatStartNewAndResume(t *testing.T) {
 		t.Errorf("new-session args = %q", a)
 	}
 
-	out, isErr = s.ChatStart(context.Background(), "codex", repo, "more", "thr-7")
+	out, isErr = s.ChatStart(context.Background(), "codex", repo, "more", "thr-7", agent.Options{})
 	if isErr {
 		t.Fatalf("resume start: %q", out)
 	}
@@ -482,7 +482,7 @@ func TestChatStartNewAndResume(t *testing.T) {
 
 func TestChatParseFailureIsJobError(t *testing.T) {
 	s, repo := newSvc(t, &recordingRunner{reply: exec.Result{Stdout: "garbage", Stderr: "BOOM", ExitCode: 1}})
-	out, _ := s.ChatStart(context.Background(), "claude", repo, "hi", "")
+	out, _ := s.ChatStart(context.Background(), "claude", repo, "hi", "", agent.Options{})
 	got, isErr := waitStatus(t, s, jobID(t, out))
 	if !isErr || !strings.Contains(got, "BOOM") || !strings.Contains(got, "claude exit 1") {
 		t.Errorf("want error with stderr and exit code, got %q isErr=%v", got, isErr)
@@ -493,19 +493,19 @@ func TestStartValidatesUpfront(t *testing.T) {
 	s, repo := newSvc(t, &fakeRunner{})
 	// An existing directory outside allowed_roots (portable: not /etc, which
 	// does not exist on Windows and would fail for a different reason).
-	if out, isErr := s.ReviewStart(context.Background(), "codex", t.TempDir(), "uncommitted", "", "", ""); !isErr || !strings.Contains(out, "allowed_root") {
+	if out, isErr := s.ReviewStart(context.Background(), "codex", t.TempDir(), "uncommitted", "", "", "", agent.Options{}); !isErr || !strings.Contains(out, "allowed_root") {
 		t.Errorf("outside root: %q %v", out, isErr)
 	}
-	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "base", "", "", ""); !isErr || !strings.Contains(out, "base") {
+	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "base", "", "", "", agent.Options{}); !isErr || !strings.Contains(out, "base") {
 		t.Errorf("bad scope: %q %v", out, isErr)
 	}
-	if out, isErr := s.ReviewStart(context.Background(), "claude", repo, "commit", "", "", ""); !isErr || !strings.Contains(out, "commit") {
+	if out, isErr := s.ReviewStart(context.Background(), "claude", repo, "commit", "", "", "", agent.Options{}); !isErr || !strings.Contains(out, "commit") {
 		t.Errorf("bad scope claude: %q %v", out, isErr)
 	}
-	if out, isErr := s.ChatStart(context.Background(), "codex", repo, "   ", ""); !isErr || !strings.Contains(out, "message") {
+	if out, isErr := s.ChatStart(context.Background(), "codex", repo, "   ", "", agent.Options{}); !isErr || !strings.Contains(out, "message") {
 		t.Errorf("empty message: %q %v", out, isErr)
 	}
-	if out, isErr := s.ChatStart(context.Background(), "", repo, "hi", ""); !isErr || !strings.Contains(out, "specify agent") {
+	if out, isErr := s.ChatStart(context.Background(), "", repo, "hi", "", agent.Options{}); !isErr || !strings.Contains(out, "specify agent") {
 		t.Errorf("no client info and no agent: %q %v", out, isErr)
 	}
 }
@@ -526,14 +526,14 @@ func TestReviewStartRejectsConcurrentJobForSameWorktree(t *testing.T) {
 	// Same folder, the repo root, and a sibling subdirectory are all the same
 	// worktree and must be rejected while the job is running.
 	for _, dir := range []string{filepath.Join(repo, "internal"), repo, filepath.Join(repo, "cmd")} {
-		out, isErr := s.ReviewStart(context.Background(), "codex", dir, "uncommitted", "", "", "")
+		out, isErr := s.ReviewStart(context.Background(), "codex", dir, "uncommitted", "", "", "", agent.Options{})
 		if !isErr || !strings.Contains(out, "already running") || !strings.Contains(out, j.ID) {
 			t.Errorf("dir %s: expected duplicate-job rejection mentioning %s, got %q isErr=%v", dir, j.ID, out, isErr)
 		}
 	}
 	// Once finished, a new review for the same worktree is allowed.
 	j.finish("done", false)
-	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", ""); isErr {
+	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{}); isErr {
 		t.Errorf("expected new job after previous finished, got %q", out)
 	}
 }
@@ -573,7 +573,7 @@ func TestJobStoreExpiresFinishedJobsOnGet(t *testing.T) {
 func TestJobStoreShutdownCancelsRunningJobs(t *testing.T) {
 	r := &blockingRunner{started: make(chan struct{})}
 	s, repo := newSvc(t, r)
-	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", ""); isErr {
+	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{}); isErr {
 		t.Fatalf("start: %q", out)
 	}
 	<-r.started
@@ -591,5 +591,103 @@ func TestJobStatusUnknownJob(t *testing.T) {
 	out, isErr := s.JobStatus(context.Background(), "nope", time.Millisecond)
 	if !isErr || !strings.Contains(out, "unknown job_id") {
 		t.Errorf("expected unknown job error, got %q isErr=%v", out, isErr)
+	}
+}
+
+func TestStderrOverflowDoesNotMarkCompleteReviewTruncated(t *testing.T) {
+	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
+		"codex review --uncommitted": {Stdout: "FULL_VERDICT", Stderr: "trace...", StderrTruncated: true},
+	}})
+	out, _ := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{})
+	got, _ := waitStatus(t, s, jobID(t, out))
+	if !strings.Contains(got, "FULL_VERDICT") || strings.Contains(got, "[output truncated]") || strings.Contains(got, "stderr") {
+		t.Errorf("complete review with a long stderr trace must be unmarked: %q", got)
+	}
+}
+
+func TestFailureShowsStderrTail(t *testing.T) {
+	long := strings.Repeat("trace line\n", 2000) + "REAL_ERROR at the end"
+	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
+		"codex review --uncommitted": {Stderr: long, StderrTruncated: true, ExitCode: 1},
+	}})
+	out, _ := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{})
+	got, _ := waitStatus(t, s, jobID(t, out))
+	if !strings.Contains(got, "[earlier stderr dropped]") || !strings.Contains(got, "REAL_ERROR at the end") {
+		t.Errorf("want dropped marker and the final error line, got %q", got[:min(len(got), 300)])
+	}
+	if strings.Contains(got, "[output truncated]") {
+		t.Errorf("stdout was not truncated: %q", got[:min(len(got), 300)])
+	}
+}
+
+func TestReviewAndChatPassModelAndEffort(t *testing.T) {
+	r := &recordingRunner{reply: exec.Result{Stdout: "OK"}}
+	s, repo := newSvc(t, r)
+	out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{Model: "gpt-5.5", Effort: "high"})
+	if isErr || !strings.Contains(out, "model: gpt-5.5") || !strings.Contains(out, "effort: high") {
+		t.Fatalf("start: %q", out)
+	}
+	waitStatus(t, s, jobID(t, out))
+	args := strings.Join(r.last().Args, " ")
+	for _, want := range []string{`-c model="gpt-5.5"`, `-c review_model="gpt-5.5"`, `-c model_reasoning_effort="high"`} {
+		if !strings.Contains(args, want) {
+			t.Errorf("review argv missing %q: %q", want, args)
+		}
+	}
+
+	r2 := &recordingRunner{reply: exec.Result{Stdout: claudeJSON}}
+	s2, repo2 := newSvc(t, r2)
+	out, _ = s2.ChatStart(context.Background(), "claude", repo2, "hi", "", agent.Options{Model: "opus", Effort: "max"})
+	waitStatus(t, s2, jobID(t, out))
+	if args := strings.Join(r2.last().Args, " "); !strings.Contains(args, "--model opus --effort max -- hi") {
+		t.Errorf("chat argv = %q", args)
+	}
+}
+
+func TestOptionsDefaultFromConfigAndOverride(t *testing.T) {
+	r := &recordingRunner{reply: exec.Result{Stdout: claudeJSON}}
+	cfg, repo := newCfg(t)
+	cfg.Agents = map[string]config.AgentConfig{"claude": {Model: "sonnet", Effort: "low"}}
+	s := NewService(cfg, r, zerolog.Nop())
+	out, _ := s.ChatStart(context.Background(), "claude", repo, "hi", "", agent.Options{})
+	waitStatus(t, s, jobID(t, out))
+	if args := strings.Join(r.last().Args, " "); !strings.Contains(args, "--model sonnet --effort low") {
+		t.Errorf("config defaults not applied: %q", args)
+	}
+	out, _ = s.ChatStart(context.Background(), "claude", repo, "hi", "", agent.Options{Effort: "high"})
+	waitStatus(t, s, jobID(t, out))
+	if args := strings.Join(r.last().Args, " "); !strings.Contains(args, "--model sonnet --effort high") {
+		t.Errorf("per-call effort must override config: %q", args)
+	}
+}
+
+func TestOptionsRejectedBeforeJob(t *testing.T) {
+	r := &recordingRunner{reply: exec.Result{Stdout: "OK"}}
+	cfg, repo := newCfg(t)
+	cfg.Agents = map[string]config.AgentConfig{"codex": {ExtraArgs: []string{"-m", "o3"}}}
+	s := NewService(cfg, r, zerolog.Nop())
+	cases := []struct {
+		name string
+		o    agent.Options
+		want string
+	}{
+		{"bad effort", agent.Options{Effort: "ultracode"}, "invalid effort"},
+		{"bad model", agent.Options{Model: "-rf"}, "invalid model"},
+		{"extra_args conflict", agent.Options{Model: "gpt-5.5"}, "extra_args already sets"},
+	}
+	for _, c := range cases {
+		if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", c.o); !isErr || !strings.Contains(out, c.want) {
+			t.Errorf("%s: review got %q isErr=%v", c.name, out, isErr)
+		}
+		if out, isErr := s.ChatStart(context.Background(), "codex", repo, "hi", "", c.o); !isErr || !strings.Contains(out, c.want) {
+			t.Errorf("%s: chat got %q isErr=%v", c.name, out, isErr)
+		}
+	}
+	if n := len(r.all()); n != 0 {
+		t.Errorf("rejected calls must not run anything, ran %d", n)
+	}
+	// effort alone does not conflict with an extra_args model.
+	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{Effort: "high"}); isErr {
+		t.Errorf("effort-only: %q", out)
 	}
 }

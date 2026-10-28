@@ -18,12 +18,19 @@ stream_output: false   # tee peer CLI output to the server log
 # Peer agents. Both are optional; defaults shown. macOS GUI apps do not
 # inherit your shell PATH, so use absolute paths if a CLI is not found
 # (e.g. the output of `which claude`).
+# model / effort are defaults for calls that pass none (effort: low | medium
+# | high | xhigh | max). Don't also set them in extra_args: a call that passes
+# model/effort would then be rejected as conflicting.
 agents:
   codex:
     command: codex
-    extra_args: []              # e.g. ["-c", "model=o3"]
+    extra_args: []              # e.g. ["--search"]
+    # model: gpt-5.5
+    # effort: medium
   claude:
     command: claude
-    extra_args: []              # e.g. ["--model", "opus"]
+    extra_args: []
+    # model: opus
+    # effort: high
 # legacy, still honoured and appended to agents.codex.extra_args:
 # codex_extra_args: ["-c", "model=o3"]

@@ -46,6 +46,18 @@ func TestMain(m *testing.M) {
 	case "exit":
 		code, _ := strconv.Atoi(args[1])
 		os.Exit(code)
+	case "noisy":
+		// noisy <stderr KiB> <exit>: interleave 1 KiB stderr chunks with one
+		// stdout byte each, then end stderr with a marker line.
+		kib, _ := strconv.Atoi(args[1])
+		code, _ := strconv.Atoi(args[2])
+		chunk := strings.Repeat("x", 1023) + "\n"
+		for i := 0; i < kib; i++ {
+			fmt.Fprint(os.Stderr, chunk)
+			fmt.Fprint(os.Stdout, "o")
+		}
+		fmt.Fprint(os.Stderr, "FINAL_ERROR\n")
+		os.Exit(code)
 	case "sleep":
 		secs, _ := strconv.Atoi(args[1])
 		time.Sleep(time.Duration(secs) * time.Second)
@@ -137,8 +149,8 @@ func TestRunTruncates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !r.Truncated || len(r.Stdout) != 4 || !strings.HasPrefix("abcdefghij", r.Stdout) {
-		t.Errorf("got %q truncated=%v", r.Stdout, r.Truncated)
+	if !r.StdoutTruncated || len(r.Stdout) != 4 || !strings.HasPrefix("abcdefghij", r.Stdout) {
+		t.Errorf("got %q truncated=%v", r.Stdout, r.StdoutTruncated)
 	}
 }
 
@@ -155,5 +167,66 @@ func TestRunStreamsToWriter(t *testing.T) {
 	}
 	if stream.String() != "hello" {
 		t.Errorf("stream buffer = %q, want hello", stream.String())
+	}
+}
+
+func TestRunStderrOverflowKeepsTailAndLeavesStdoutUntruncated(t *testing.T) {
+	kib := StderrCap/1024 + 200 // well past the stderr cap
+	req := helper(t, "noisy", strconv.Itoa(kib), "0")
+	req.MaxOutputBytes = 0 // like chat / claude review: stdout uncapped
+	r, err := Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if r.StdoutTruncated {
+		t.Error("stderr overflow must not mark stdout truncated")
+	}
+	if len(r.Stdout) != kib {
+		t.Errorf("stdout len = %d, want %d (complete)", len(r.Stdout), kib)
+	}
+	if !r.StderrTruncated || len(r.Stderr) != StderrCap {
+		t.Errorf("stderr truncated=%v len=%d, want true,%d", r.StderrTruncated, len(r.Stderr), StderrCap)
+	}
+	if !strings.HasSuffix(r.Stderr, "FINAL_ERROR\n") {
+		t.Errorf("stderr must keep its tail, ends with %q", r.Stderr[len(r.Stderr)-40:])
+	}
+}
+
+func TestRunStderrUnderCapNotTruncated(t *testing.T) {
+	r, err := Run(context.Background(), helper(t, "noisy", "3", "1"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if r.StderrTruncated || r.StdoutTruncated || r.ExitCode != 1 || !strings.HasSuffix(r.Stderr, "FINAL_ERROR\n") {
+		t.Errorf("got stderrTrunc=%v stdoutTrunc=%v exit=%d", r.StderrTruncated, r.StdoutTruncated, r.ExitCode)
+	}
+}
+
+func TestRunExactCapStdoutNotTruncated(t *testing.T) {
+	req := helper(t, "echo", "abcd")
+	req.MaxOutputBytes = 4
+	r, err := Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if r.StdoutTruncated || r.Stdout != "abcd" {
+		t.Errorf("got %q truncated=%v", r.Stdout, r.StdoutTruncated)
+	}
+}
+
+func TestTailBuffer(t *testing.T) {
+	tb := tailBuffer{max: 4}
+	for _, p := range []string{"ab", "cdef", "ghijklmnop", "q"} {
+		if n, err := tb.Write([]byte(p)); n != len(p) || err != nil {
+			t.Fatalf("Write(%q) = %d,%v", p, n, err)
+		}
+	}
+	if got, dropped := tb.result(); got != "nopq" || !dropped {
+		t.Errorf("result = %q,%v want nopq,true", got, dropped)
+	}
+	small := tailBuffer{max: 10}
+	small.Write([]byte("hi"))
+	if got, dropped := small.result(); got != "hi" || dropped {
+		t.Errorf("small = %q,%v", got, dropped)
 	}
 }

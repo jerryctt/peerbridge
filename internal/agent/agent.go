@@ -36,6 +36,41 @@ type Settings struct {
 	ExtraArgs []string
 }
 
+// Efforts is the reasoning-effort scale accepted by review_start and
+// chat_start. Values are forwarded unchanged; which ones a model supports is
+// up to the vendor CLI, which reports unsupported combinations itself.
+var Efforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// Options are per-call model settings. The zero value means "CLI default".
+// Passed by value; it holds no reference types.
+type Options struct {
+	Model  string
+	Effort string
+}
+
+// modelPattern accepts model aliases and ids ("opus", "gpt-5.5",
+// "claude-sonnet-5", "openai/gpt-x:latest"). No leading '-' (never an option)
+// and no quotes or spaces, so the value is safe inside a TOML string for
+// codex's -c overrides.
+var modelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$`)
+
+// ValidateOptions checks model and effort; empty fields are allowed.
+func ValidateOptions(o Options) error {
+	if o.Model != "" && !modelPattern.MatchString(o.Model) {
+		return fmt.Errorf("invalid model %q: letters, digits and . _ : / - only (max 100), not starting with '-'", o.Model)
+	}
+	if o.Effort != "" {
+		ok := false
+		for _, e := range Efforts {
+			ok = ok || o.Effort == e
+		}
+		if !ok {
+			return fmt.Errorf("invalid effort %q: must be one of %s", o.Effort, strings.Join(Efforts, ", "))
+		}
+	}
+	return nil
+}
+
 // Backend builds argv for, and parses output of, one vendor's CLI.
 // Implementations must never emit flags that allow the CLI to write files.
 type Backend interface {
@@ -43,12 +78,15 @@ type Backend interface {
 	Command() string
 	// ReviewArgs returns argv (excluding the command) for a review of the
 	// given scope. native=false means the CLI has no review subcommand; the
-	// caller must then run ChatArgs(ReviewPrompt(...), "") instead. err
+	// caller must then run ChatArgs(ReviewPrompt(...), "", o) instead. err
 	// reports invalid scope/base/commit combinations in both cases.
-	ReviewArgs(scope, base, commit, prompt string) (args []string, native bool, err error)
+	ReviewArgs(scope, base, commit, prompt string, o Options) (args []string, native bool, err error)
 	// ChatArgs returns argv for one conversational turn. sessionID == ""
 	// starts a new session; otherwise the turn continues that session.
-	ChatArgs(message, sessionID string) []string
+	ChatArgs(message, sessionID string, o Options) []string
+	// CheckOptions reports an error when o sets a model or effort that the
+	// configured extra_args already set, rather than guessing which wins.
+	CheckOptions(o Options) error
 	// ParseChat extracts the assistant's reply and the session id from the
 	// CLI's stdout.
 	ParseChat(stdout string) (reply, sessionID string, err error)

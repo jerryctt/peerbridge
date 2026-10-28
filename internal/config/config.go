@@ -92,6 +92,10 @@ type Config struct {
 type AgentConfig struct {
 	Command   string   `yaml:"command"`
 	ExtraArgs []string `yaml:"extra_args"`
+	// Model and Effort are defaults for review_start / chat_start calls that
+	// do not pass their own. Empty means the CLI's own default.
+	Model  string `yaml:"model"`
+	Effort string `yaml:"effort"`
 }
 
 // DefaultAgents returns the built-in agent settings.

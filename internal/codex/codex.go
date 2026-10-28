@@ -50,13 +50,16 @@ func (b *Backend) Name() string    { return "codex" }
 func (b *Backend) Command() string { return b.s.Command }
 
 // ReviewArgs is native for codex: `codex review` computes the diff itself and
-// never writes files. Extra args go before the optional positional prompt.
-func (b *Backend) ReviewArgs(scope, base, commit, prompt string) ([]string, bool, error) {
+// never writes files. Extra args and model options go before the optional
+// positional prompt. Native review loads the user's config, which may carry
+// a review_model override, so a requested model sets review_model as well.
+func (b *Backend) ReviewArgs(scope, base, commit, prompt string, o agent.Options) ([]string, bool, error) {
 	args, positional, err := ReviewArgs(scope, base, commit, prompt)
 	if err != nil {
 		return nil, true, err
 	}
 	args = append(args, b.s.ExtraArgs...)
+	args = append(args, optionArgs(o, true)...)
 	if positional != "" {
 		args = append(args, positional)
 	}
@@ -78,7 +81,7 @@ func (b *Backend) ReviewArgs(scope, base, commit, prompt string) ([]string, bool
 // --json, --skip-git-repo-check, --ignore-user-config and -c overrides but
 // NOT --sandbox, so the read-only policy is expressed as the equivalent
 // config override there. (Verified against codex CLI help and live runs.)
-func (b *Backend) ChatArgs(message, sessionID string) []string {
+func (b *Backend) ChatArgs(message, sessionID string, o agent.Options) []string {
 	var args []string
 	if sessionID == "" {
 		args = []string{"exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-user-config"}
@@ -86,6 +89,7 @@ func (b *Backend) ChatArgs(message, sessionID string) []string {
 		args = []string{"exec", "resume", "--json", "--skip-git-repo-check", "--ignore-user-config", "-c", `sandbox_mode="read-only"`}
 	}
 	args = append(args, b.s.ExtraArgs...)
+	args = append(args, optionArgs(o, false)...)
 	// "--" ends option parsing so caller-supplied text (a message that happens
 	// to start with "--", an odd session id) is always a positional.
 	args = append(args, "--")
@@ -93,6 +97,67 @@ func (b *Backend) ChatArgs(message, sessionID string) []string {
 		args = append(args, sessionID)
 	}
 	return append(args, message)
+}
+
+// optionArgs renders model/effort as -c config overrides, which every codex
+// subcommand we use (review, exec, exec resume) accepts. Values were checked
+// by agent.ValidateOptions, so they cannot break out of the TOML string.
+func optionArgs(o agent.Options, review bool) []string {
+	var args []string
+	if o.Model != "" {
+		args = append(args, "-c", `model="`+o.Model+`"`)
+		if review {
+			args = append(args, "-c", `review_model="`+o.Model+`"`)
+		}
+	}
+	if o.Effort != "" {
+		args = append(args, "-c", `model_reasoning_effort="`+o.Effort+`"`)
+	}
+	return args
+}
+
+// CheckOptions rejects a model/effort when extra_args already sets one, in
+// any spelling codex accepts: -m/--model (separate, "=" or attached -mX) and
+// -c/--config overrides of model, review_model or model_reasoning_effort
+// (separate, "=" or attached -cK=V).
+func (b *Backend) CheckOptions(o agent.Options) error {
+	ex := b.s.ExtraArgs
+	conflict := func(what, arg string) error {
+		return fmt.Errorf("agents.codex.extra_args already sets %s (%q); remove it there or omit that parameter", what, arg)
+	}
+	for i := 0; i < len(ex); i++ {
+		a := ex[i]
+		if o.Model != "" && (a == "-m" || a == "--model" || strings.HasPrefix(a, "--model=") ||
+			(strings.HasPrefix(a, "-m") && !strings.HasPrefix(a, "--"))) {
+			return conflict("the model", a)
+		}
+		var kv string
+		switch {
+		case a == "-c" || a == "--config":
+			if i+1 < len(ex) {
+				i++
+				kv = ex[i]
+			}
+		case strings.HasPrefix(a, "--config="):
+			kv = strings.TrimPrefix(a, "--config=")
+		case strings.HasPrefix(a, "-c") && !strings.HasPrefix(a, "--"):
+			kv = strings.TrimPrefix(a, "-c")
+		default:
+			continue
+		}
+		key, _, _ := strings.Cut(kv, "=")
+		switch strings.TrimSpace(key) {
+		case "model", "review_model":
+			if o.Model != "" {
+				return conflict("the model", kv)
+			}
+		case "model_reasoning_effort":
+			if o.Effort != "" {
+				return conflict("the reasoning effort", kv)
+			}
+		}
+	}
+	return nil
 }
 
 type jsonlEvent struct {

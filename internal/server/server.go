@@ -21,7 +21,7 @@ import (
 
 // version is reported in the MCP initialize handshake. Keep in sync with
 // .claude-plugin/plugin.json.
-const version = "0.5.0"
+const version = "0.6.0"
 
 // New builds the MCP server. The returned shutdown func cancels any
 // still-running background jobs (killing their CLI process groups) and
@@ -57,18 +57,31 @@ func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCP
 		mcp.WithString("prompt", mcp.Description("Custom review instructions. ONLY pass this when the user explicitly asks to narrow or focus the review (e.g. \"focus on concurrency\"); omit it for a normal general review. Safe to combine with any scope.")),
 	}
 
+	modelOpt := mcp.WithString("model",
+		mcp.Description("Model for the peer CLI: a claude alias or id (e.g. opus, sonnet) or a codex model id. Only pass it when the user asks for a specific model; omit it to use agents.<agent>.model from config, else the CLI default."),
+	)
+	effortOpt := mcp.WithString("effort",
+		mcp.Description("Reasoning effort for the peer. Which levels a model supports is up to the vendor CLI. Only pass it when the user asks for more or less depth; omit it to use agents.<agent>.effort from config, else the CLI default."),
+		mcp.Enum(agent.Efforts...),
+	)
+	// opts reads model/effort; the deprecated alias has no such params and
+	// passes forceAgent, so it always gets the zero value.
+	opts := func(req mcp.CallToolRequest) agent.Options {
+		return agent.Options{Model: req.GetString("model", ""), Effort: req.GetString("effort", "")}
+	}
+
 	reviewHandler := func(forceAgent string) mcpserver.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			folder, err := req.RequireString("folder")
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			a := forceAgent
+			a, o := forceAgent, agent.Options{}
 			if a == "" {
-				a = req.GetString("agent", "")
+				a, o = req.GetString("agent", ""), opts(req)
 			}
 			return text(svc.ReviewStart(ctx, a, folder,
-				req.GetString("scope", "uncommitted"), req.GetString("base", ""), req.GetString("commit", ""), req.GetString("prompt", "")))
+				req.GetString("scope", "uncommitted"), req.GetString("base", ""), req.GetString("commit", ""), req.GetString("prompt", ""), o))
 		}
 	}
 	statusHandler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -96,13 +109,13 @@ func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCP
 	s.AddTool(mcp.NewTool("review_start",
 		append(withRO(
 			mcp.WithDescription("Start a read-only code review of changes in a host project folder by a peer agent ("+agents+"). Runs in the background on the host and returns a job_id immediately; poll job_status for the result. Reviews often take several minutes, longer than the MCP client's per-call limit, hence the job model. The peer never modifies files."),
-			folderOpt, agentOpt,
+			folderOpt, agentOpt, modelOpt, effortOpt,
 		), scopeOpts...)...,
 	), reviewHandler(""))
 
 	s.AddTool(mcp.NewTool("chat_start", withRO(
 		mcp.WithDescription("Send one message to a peer agent ("+agents+") that can read the host project folder (read-only) and get its reply via job_status. Use it for second opinions, design critique or a multi-round discussion: the job_status result includes a session_id; pass it back as session_id to continue the same conversation. Runs in the background; poll job_status."),
-		folderOpt, agentOpt,
+		folderOpt, agentOpt, modelOpt, effortOpt,
 		mcp.WithString("message", mcp.Required(), mcp.Description("What to say to the peer. Include the context it needs (what you changed, what you want its opinion on); it only sees the repo and this conversation.")),
 		mcp.WithString("session_id", mcp.Description("session_id from a previous job_status result to continue that conversation. Omit to start a new one.")),
 	)...), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -114,7 +127,7 @@ func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCP
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return text(svc.ChatStart(ctx, req.GetString("agent", ""), folder, msg, req.GetString("session_id", "")))
+		return text(svc.ChatStart(ctx, req.GetString("agent", ""), folder, msg, req.GetString("session_id", ""), opts(req)))
 	})
 
 	pollDesc := fmt.Sprintf("Blocks up to ~%s waiting for completion", statusPoll.Round(time.Second))
@@ -193,7 +206,7 @@ func clientName(ctx context.Context) string {
 // does not use the request context (it is cancelled as soon as this call
 // returns); it runs under the job store's server-lifetime context so
 // shutdown() can still cancel it.
-func (s *Service) ReviewStart(ctx context.Context, agentName, folder, scope, base, commit, prompt string) (string, bool) {
+func (s *Service) ReviewStart(ctx context.Context, agentName, folder, scope, base, commit, prompt string, opts agent.Options) (string, bool) {
 	b, err := ResolveAgent(agentName, clientName(ctx), s.Backends)
 	if err != nil {
 		return err.Error(), true
@@ -202,8 +215,12 @@ func (s *Service) ReviewStart(ctx context.Context, agentName, folder, scope, bas
 	if err != nil {
 		return err.Error(), true
 	}
+	o, err := s.resolveOptions(b, opts)
+	if err != nil {
+		return err.Error(), true
+	}
 	// Catch bad scope/base/commit combinations now, not minutes later.
-	if _, _, err := b.ReviewArgs(scope, base, commit, prompt); err != nil {
+	if _, _, err := b.ReviewArgs(scope, base, commit, prompt, o); err != nil {
 		return err.Error(), true
 	}
 	label := scope
@@ -214,20 +231,20 @@ func (s *Service) ReviewStart(ctx context.Context, agentName, folder, scope, bas
 	if err != nil {
 		return err.Error(), true
 	}
-	s.Log.Info().Str("tool", "review_start").Str("job", j.ID).Str("agent", b.Name()).Str("folder", dir).Str("mode", label).Msg("invocation")
+	s.Log.Info().Str("tool", "review_start").Str("job", j.ID).Str("agent", b.Name()).Str("folder", dir).Str("mode", label).Str("model", o.Model).Str("effort", o.Effort).Msg("invocation")
 	go func() {
-		out, isErr := s.runReview(s.Jobs.ctx, b, dir, scope, base, commit, prompt)
+		out, isErr := s.runReview(s.Jobs.ctx, b, dir, scope, base, commit, prompt, o)
 		j.finish(out, isErr)
 	}()
 	return fmt.Sprintf(
-		"Review started in the background.\njob_id: %s\nagent: %s\nmode: %s\nfolder: %s\n\nCall job_status with this job_id to get the result. Reviews typically take 1-10 minutes; the server-side limit is %s (config 'timeout').",
-		j.ID, b.Name(), label, dir, s.Cfg.Timeout,
+		"Review started in the background.\njob_id: %s\nagent: %s\n%smode: %s\nfolder: %s\n\nCall job_status with this job_id to get the result. Reviews typically take 1-10 minutes; the server-side limit is %s (config 'timeout').",
+		j.ID, b.Name(), optionLines(o), label, dir, s.Cfg.Timeout,
 	), false
 }
 
 // ChatStart starts one conversational turn with the peer agent as a
 // background job. sessionID continues an earlier conversation.
-func (s *Service) ChatStart(ctx context.Context, agentName, folder, message, sessionID string) (string, bool) {
+func (s *Service) ChatStart(ctx context.Context, agentName, folder, message, sessionID string, opts agent.Options) (string, bool) {
 	b, err := ResolveAgent(agentName, clientName(ctx), s.Backends)
 	if err != nil {
 		return err.Error(), true
@@ -242,13 +259,17 @@ func (s *Service) ChatStart(ctx context.Context, agentName, folder, message, ses
 	if err := agent.ValidateSessionID(sessionID); err != nil {
 		return err.Error(), true
 	}
+	o, err := s.resolveOptions(b, opts)
+	if err != nil {
+		return err.Error(), true
+	}
 	j, err := s.Jobs.add(dir, b.Name(), agent.KindChat, "")
 	if err != nil {
 		return err.Error(), true
 	}
-	s.Log.Info().Str("tool", "chat_start").Str("job", j.ID).Str("agent", b.Name()).Str("folder", dir).Bool("resume", sessionID != "").Msg("invocation")
+	s.Log.Info().Str("tool", "chat_start").Str("job", j.ID).Str("agent", b.Name()).Str("folder", dir).Bool("resume", sessionID != "").Str("model", o.Model).Str("effort", o.Effort).Msg("invocation")
 	go func() {
-		out, isErr := s.runChat(s.Jobs.ctx, b, dir, message, sessionID)
+		out, isErr := s.runChat(s.Jobs.ctx, b, dir, message, sessionID, o)
 		j.finish(out, isErr)
 	}()
 	cont := "a new conversation"
@@ -256,9 +277,41 @@ func (s *Service) ChatStart(ctx context.Context, agentName, folder, message, ses
 		cont = "continuing session " + sessionID
 	}
 	return fmt.Sprintf(
-		"Chat turn started in the background (%s).\njob_id: %s\nagent: %s\nfolder: %s\n\nCall job_status with this job_id to get the reply; it includes the session_id to pass to the next chat_start.",
-		cont, j.ID, b.Name(), dir,
+		"Chat turn started in the background (%s).\njob_id: %s\nagent: %s\n%sfolder: %s\n\nCall job_status with this job_id to get the reply; it includes the session_id to pass to the next chat_start.",
+		cont, j.ID, b.Name(), optionLines(o), dir,
 	), false
+}
+
+// resolveOptions fills unset model/effort from agents.<name> in config, then
+// validates the result and checks it against the backend's extra_args. Each
+// call resolves afresh: nothing is remembered between turns of a chat.
+func (s *Service) resolveOptions(b agent.Backend, o agent.Options) (agent.Options, error) {
+	def := s.Cfg.Agent(b.Name())
+	if o.Model == "" {
+		o.Model = def.Model
+	}
+	if o.Effort == "" {
+		o.Effort = def.Effort
+	}
+	if err := agent.ValidateOptions(o); err != nil {
+		return o, err
+	}
+	if err := b.CheckOptions(o); err != nil {
+		return o, err
+	}
+	return o, nil
+}
+
+// optionLines renders the effective model/effort for a job-start message.
+func optionLines(o agent.Options) string {
+	var out strings.Builder
+	if o.Model != "" {
+		fmt.Fprintf(&out, "model: %s\n", o.Model)
+	}
+	if o.Effort != "" {
+		fmt.Fprintf(&out, "effort: %s\n", o.Effort)
+	}
+	return out.String()
 }
 
 // JobStatus reports on a background job, blocking up to wait for it to
@@ -367,7 +420,7 @@ func (s *Service) filterOverrides(ctx context.Context, dir string) ([]string, er
 	if res.ExitCode != 0 && res.ExitCode != 1 {
 		return nil, fmt.Errorf("git config --get-regexp failed (exit %d): %s", res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
-	if res.Truncated {
+	if res.StdoutTruncated {
 		return nil, fmt.Errorf("git config --get-regexp output was truncated; refusing to compute a diff with possibly live filter drivers")
 	}
 	seen := map[string]bool{}
@@ -483,7 +536,7 @@ func (s *Service) changeContext(ctx context.Context, dir, scope, base, commit st
 			return "", false, fmt.Errorf("git %s failed (exit %d): %s", strings.Join(args, " "), res.ExitCode, strings.TrimSpace(res.Stderr))
 		}
 		fmt.Fprintf(&out, "$ git %s\n%s\n", strings.Join(args, " "), res.Stdout)
-		if res.Truncated {
+		if res.StdoutTruncated {
 			truncated = true
 			out.WriteString("[diff truncated by max_output_bytes]\n")
 		}
@@ -503,8 +556,8 @@ func notFoundHint(b agent.Backend, err error) string {
 	return fmt.Sprintf("%v (is %q installed and on PATH? set agents.%s.command in config.yaml to an absolute path)", err, b.Command(), b.Name())
 }
 
-func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, base, commit, prompt string) (string, bool) {
-	args, native, err := b.ReviewArgs(scope, base, commit, prompt)
+func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, base, commit, prompt string, o agent.Options) (string, bool) {
+	args, native, err := b.ReviewArgs(scope, base, commit, prompt, o)
 	if err != nil {
 		return err.Error(), true
 	}
@@ -521,7 +574,7 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 			return err.Error(), true
 		}
 		inputTruncated = truncated
-		args = b.ChatArgs(p, "")
+		args = b.ChatArgs(p, "", o)
 		// The diff can be far larger than an argv element may be; the CLIs
 		// append piped stdin to the prompt, so it travels that way.
 		stdin = "--- diff ---\n" + diff
@@ -558,8 +611,8 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 	return out.String(), false
 }
 
-func (s *Service) runChat(ctx context.Context, b agent.Backend, dir, message, sessionID string) (string, bool) {
-	res, err := s.run(ctx, b, dir, b.ChatArgs(message, sessionID), "", 0)
+func (s *Service) runChat(ctx context.Context, b agent.Backend, dir, message, sessionID string, o agent.Options) (string, bool) {
+	res, err := s.run(ctx, b, dir, b.ChatArgs(message, sessionID, o), "", 0)
 	if err != nil {
 		s.Log.Info().Str("tool", "chat").Str("agent", b.Name()).Str("folder", dir).Err(err).Msg("invocation")
 		return notFoundHint(b, err), true
@@ -586,18 +639,27 @@ func (s *Service) runChat(ctx context.Context, b agent.Backend, dir, message, se
 	return out.String(), false
 }
 
+// stderrShown is how much of a failed CLI's stderr tail is shown.
+const stderrShown = 8192
+
 // diagnostics appends stderr (only when the CLI failed — its stderr is a
 // verbose progress trace that is already streamed to the server log), plus
-// timeout and truncation markers.
+// timeout and truncation markers. Stderr is shown from its end, where the
+// error is; "[output truncated]" refers to stdout only, since a long stderr
+// trace says nothing about whether the result is complete.
 func diagnostics(b agent.Backend, res exec.Result, timeout time.Duration) string {
 	var out strings.Builder
 	if res.ExitCode != 0 && res.Stderr != "" {
-		fmt.Fprintf(&out, "\n--- %s stderr (exit %d) ---\n%s\n", b.Name(), res.ExitCode, agent.Tail(res.Stderr, 8192))
+		fmt.Fprintf(&out, "\n--- %s stderr (exit %d) ---\n", b.Name(), res.ExitCode)
+		if res.StderrTruncated || len(res.Stderr) > stderrShown {
+			out.WriteString("[earlier stderr dropped]\n")
+		}
+		fmt.Fprintf(&out, "%s\n", agent.Tail(res.Stderr, stderrShown))
 	}
 	if res.TimedOut {
 		fmt.Fprintf(&out, "\n[%s was killed after the server-side timeout of %s (config 'timeout'); the result is incomplete]\n", b.Name(), timeout)
 	}
-	if res.Truncated {
+	if res.StdoutTruncated {
 		out.WriteString("\n[output truncated]\n")
 	}
 	return out.String()

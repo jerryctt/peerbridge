@@ -58,7 +58,8 @@ Coding agent 各自活在自己的 app 裡。[Claude](https://claude.ai)（Deskt
 - **唯讀 peer** — claude peer 只拿到讀檔工具（`--tools Read,Grep,Glob`，沒有 shell；review 用的 diff 由 peerbridge 以唯讀 git 算好、經 stdin 餵給 peer），且不載入任何使用者設定與 MCP server（`--setting-sources "" --strict-mcp-config`）；codex peer 跑在 codex 自己的 `--sandbox read-only` 並加 `--ignore-user-config`。兩者都無法遞迴呼叫 peerbridge，你原本的 CLI 登入照常有效。
 - **`codex_review_start` / `codex_review_status`** — 已棄用的別名，等同 `review_start(agent=codex)` / `job_status`；既有安裝照常可用。
 - **嚴格安全** — 根目錄限制、符號連結解析後的路徑檢查、peer 的 argv 固定且唯讀、不提供任意指令執行、絕不使用 shell。
-- **可設定** — 允許的根目錄、timeout、輸出上限、各 agent 的指令路徑與額外旗標。
+- **每次呼叫可指定 model 與 effort** — `review_start` / `chat_start` 可選帶 `model` 與 `effort`（`low`…`max`），也能在設定檔給各 agent 預設值。
+- **可設定** — 允許的根目錄、timeout、輸出上限、各 agent 的指令路徑、額外旗標、預設 model 與 effort。
 - **審計日誌** — 每次工具呼叫都透過 zerolog 寫到 stderr。
 
 ---
@@ -213,10 +214,14 @@ stream_output: true
 agents:
   codex:
     command: codex
-    extra_args: []              # 例如 ["-c", "model=o3"]
+    extra_args: []              # 例如 ["--search"]
+    # model: gpt-5.5            # 呼叫沒帶 model 時的預設
+    # effort: medium            # low | medium | high | xhigh | max
   claude:
     command: claude
-    extra_args: []              # 例如 ["--model", "opus"]
+    extra_args: []
+    # model: opus
+    # effort: high
 
 # 舊欄位，仍然有效，會附加到 agents.codex.extra_args：
 # codex_extra_args: ["-c", "model=o3"]
@@ -268,6 +273,8 @@ agents:
 | `base` | string | 否 | base branch 或 ref；`scope=base` 時必填（例如 `main`） |
 | `commit` | string | 否 | commit SHA；`scope=commit` 時必填 |
 | `prompt` | string | 否 | 自訂 review 指示（例如 `"focus on error handling"`）。只在明確要聚焦時使用；可與任何 `scope` 搭配。 |
+| `model` | string | 否 | peer 使用的 model（見下方「Model 與 effort」） |
+| `effort` | string | 否 | `low`、`medium`、`high`、`xhigh` 或 `max`（見下方「Model 與 effort」） |
 
 `agent=codex` 執行 `codex review`（原生，自行計算 diff）。`agent=claude` 以 review prompt 執行 `claude -p`，要求它用唯讀 git 指令檢視變更。
 
@@ -289,6 +296,18 @@ folder: /Users/you/proj
 | `message` | string | 是 | 要說的話。請附上 peer 需要的脈絡——它只看得到 repo 與這段對話。 |
 | `agent` | string | 否 | `codex` 或 `claude`；省略則自動選 peer |
 | `session_id` | string | 否 | 前一次 `job_status` 回傳的 `session_id`，用來續接該對話 |
+| `model` | string | 否 | 這一輪 peer 使用的 model |
+| `effort` | string | 否 | 這一輪的推理強度：`low`、`medium`、`high`、`xhigh` 或 `max` |
+
+### Model 與 effort
+
+`model` 與 `effort` 用來指定單次呼叫時 peer 的 model 與推理強度，例如 `review_start(folder=…, agent="claude", model="opus", effort="high")`。
+
+- **claude** 會收到 `--model <model> --effort <effort>`；`model` 可以是別名（`opus`、`sonnet`…）或完整 model id。
+- **codex** 會收到 `-c model="<model>"`（review 時另加 `-c review_model="<model>"`，避免你 codex 設定裡的 `review_model` 蓋過去）與 `-c model_reasoning_effort="<effort>"`。
+- 優先順序：呼叫時帶的值 → `config.yaml` 的 `agents.<name>.model` / `.effort` → CLI 自己的預設。每次呼叫都重新決定；續接對話時沒帶的值不會重送，由 CLI 自行決定。
+- 某個 model 支援哪些 effort 由各家 CLI 決定；不支援的組合會直接回傳 CLI 的錯誤。
+- 若 `extra_args` 已經指定 model 或 effort（例如 `["-m", "o3"]`），呼叫時再帶會被拒絕，不去猜哪個旗標優先；請改寫到設定檔的 `model:` / `effort:`。
 
 ### `job_status`
 
@@ -376,7 +395,7 @@ Claude marketplace plugin 與 `scripts/install-codex.sh` 會自動安裝它們�
 
 - **根目錄限制。** 每個路徑參數都解析（含符號連結）後對照 `allowed_roots`。
 - **無 shell。** 指令以 argv 陣列經 `os/exec` 執行，沒有 `sh -c`、沒有 glob 展開、沒有 shell injection。
-- **唯讀 peer。** peer 的 argv 由 server 固定。codex 用 `codex review` / `codex exec --sandbox read-only --ignore-user-config`（OS 層沙箱）。claude 沒有沙箱，所以完全不給 shell：`-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`。claude review 的 `git status`/`git diff`/`git show` 由 peerbridge 自己執行並經 stdin 餵給 peer——唯讀且加固：ref 會先驗證（不可能像選項）、`--no-ext-diff --no-textconv`、`core.fsmonitor=false`、`core.hooksPath=/dev/null`、忽略 global/system git config（`GIT_CONFIG_GLOBAL=/dev/null` 等）並設 `GIT_OPTIONAL_LOCKS=0`，所以不會跑任何 diff helper、filter 或 hook，也不會寫入任何東西。只有 `agents.<name>.command` 與 `extra_args` 來自設定。
+- **唯讀 peer。** peer 的 argv 由 server 固定。codex 用 `codex review` / `codex exec --sandbox read-only --ignore-user-config`（OS 層沙箱）。claude 沒有沙箱，所以完全不給 shell：`-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`。claude review 的 `git status`/`git diff`/`git show` 由 peerbridge 自己執行並經 stdin 餵給 peer——唯讀且加固：ref 會先驗證（不可能像選項）、`--no-ext-diff --no-textconv`、`core.fsmonitor=false`、`core.hooksPath=/dev/null`、忽略 global/system git config（`GIT_CONFIG_GLOBAL=/dev/null` 等）並設 `GIT_OPTIONAL_LOCKS=0`，所以不會跑任何 diff helper、filter 或 hook，也不會寫入任何東西。只有 `agents.<name>.command`、`extra_args`，以及經過驗證的 `model` / `effort` 來自設定或呼叫端（model 只允許英數與 `. _ : / -`，effort 限定固定清單）。
 - **不繼承權限、不遞迴。** `--setting-sources ""` 讓使用者自己的 Claude 權限規則與 hook 不會進到 peer（`--allowedTools` 是疊加在設定之上的，這樣它才是完整清單）；`--strict-mcp-config`（claude）與 `--ignore-user-config`（codex）讓 peer 啟動時沒有使用者的任何 MCP server，所以不會載入 peerbridge 自己。刻意不用 `--bare`：它會關閉 OAuth/keychain 認證，訂閱登入會失效。`-c mcp_servers={}` 也被否決：config 覆寫是合併而非取代。
 - **不提供任意指令執行。** 沒有任何工具能跑任意指令：peerbridge 只會啟動帶上述固定 argv 的 peer CLI，以及它自己加固過的唯讀 git。（`run_command` 已在 v0.5.0 移除：即使有允許清單，`claude`/`codex`/`git` 都能靠參數繞過唯讀設計。）
 - **原生程序，非 Docker。** 容器化會失去主機 CLI 與登入狀態的存取。

@@ -272,3 +272,18 @@ func TestLegacyHostrunnerLocationsStillWork(t *testing.T) {
 		t.Error("PEERBRIDGE_CONFIG must take precedence")
 	}
 }
+
+func TestLoadAgentModelEffort(t *testing.T) {
+	root := t.TempDir()
+	p := writeTemp(t, "allowed_roots:\n  - "+root+"\nagents:\n  claude:\n    model: opus\n    effort: high\n")
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if a := c.Agent("claude"); a.Command != "claude" || a.Model != "opus" || a.Effort != "high" {
+		t.Errorf("Agent(claude) = %+v", a)
+	}
+	if a := c.Agent("codex"); a.Model != "" || a.Effort != "" {
+		t.Errorf("Agent(codex) should have no defaults: %+v", a)
+	}
+}

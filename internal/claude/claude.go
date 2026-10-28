@@ -21,7 +21,7 @@ func (b *Backend) Command() string { return b.s.Command }
 // ReviewArgs: claude has no review subcommand, so reviews go through
 // ChatArgs with agent.ReviewPrompt. Scope is still validated here so bad
 // requests fail before a job is started.
-func (b *Backend) ReviewArgs(scope, base, commit, _ string) ([]string, bool, error) {
+func (b *Backend) ReviewArgs(scope, base, commit, _ string, _ agent.Options) ([]string, bool, error) {
 	if _, err := agent.ScopeSentence(scope, base, commit); err != nil {
 		return nil, false, err
 	}
@@ -53,7 +53,10 @@ const deniedTools = "Edit,Write,NotebookEdit,Bash"
 // The message goes last, after a "--" terminator, so it is always the prompt
 // positional even when it starts with "--" (and no list-valued flag can
 // consume it as a value).
-func (b *Backend) ChatArgs(message, sessionID string) []string {
+//
+// Model and effort (o) go after extra_args; CheckOptions has already rejected
+// an extra_args entry that sets the same flag.
+func (b *Backend) ChatArgs(message, sessionID string, o agent.Options) []string {
 	args := []string{
 		"-p",
 		"--strict-mcp-config",
@@ -68,7 +71,26 @@ func (b *Backend) ChatArgs(message, sessionID string) []string {
 		args = append(args, "--resume", sessionID)
 	}
 	args = append(args, b.s.ExtraArgs...)
+	if o.Model != "" {
+		args = append(args, "--model", o.Model)
+	}
+	if o.Effort != "" {
+		args = append(args, "--effort", o.Effort)
+	}
 	return append(args, "--", message)
+}
+
+// CheckOptions rejects a model/effort when extra_args already passes
+// --model / --effort (separate or "=" form).
+func (b *Backend) CheckOptions(o agent.Options) error {
+	for _, a := range b.s.ExtraArgs {
+		for _, c := range []struct{ flag, want, field string }{{"--model", o.Model, "model"}, {"--effort", o.Effort, "effort"}} {
+			if c.want != "" && (a == c.flag || strings.HasPrefix(a, c.flag+"=")) {
+				return fmt.Errorf("agents.claude.extra_args already sets %s (%q); remove it there or omit %s", c.flag, a, c.field)
+			}
+		}
+	}
+	return nil
 }
 
 type result struct {

@@ -9,18 +9,18 @@ import (
 
 func TestReviewArgsIsNotNative(t *testing.T) {
 	b := New(agent.Settings{Command: "claude"})
-	args, native, err := b.ReviewArgs("uncommitted", "", "", "")
+	args, native, err := b.ReviewArgs("uncommitted", "", "", "", agent.Options{})
 	if err != nil || native || args != nil {
 		t.Errorf("want nil,false,nil got %v,%v,%v", args, native, err)
 	}
-	if _, _, err := b.ReviewArgs("base", "", "", ""); err == nil {
+	if _, _, err := b.ReviewArgs("base", "", "", "", agent.Options{}); err == nil {
 		t.Error("base without ref should error")
 	}
 }
 
 func TestChatArgs(t *testing.T) {
 	b := New(agent.Settings{Command: "claude", ExtraArgs: []string{"--model", "opus"}})
-	args := b.ChatArgs("--help", "")
+	args := b.ChatArgs("--help", "", agent.Options{})
 	if args[0] != "-p" || args[len(args)-2] != "--" || args[len(args)-1] != "--help" {
 		t.Errorf("message must be the final positional after --: %v", args)
 	}
@@ -47,7 +47,7 @@ func TestChatArgs(t *testing.T) {
 			t.Errorf("--tools must not include Bash: %q", args[i+1])
 		}
 	}
-	resumed := strings.Join(b.ChatArgs("again", "sess-1"), " ")
+	resumed := strings.Join(b.ChatArgs("again", "sess-1", agent.Options{}), " ")
 	if !strings.Contains(resumed, "--resume sess-1 --model opus -- again") {
 		t.Errorf("resume/extra/terminator order wrong: %q", resumed)
 	}
@@ -74,5 +74,36 @@ func TestParseChat(t *testing.T) {
 	}
 	if _, _, err := b.ParseChat("not json at all"); err == nil {
 		t.Error("garbage should error")
+	}
+}
+
+func TestChatArgsOptions(t *testing.T) {
+	b := New(agent.Settings{Command: "claude"})
+	got := strings.Join(b.ChatArgs("hi", "s1", agent.Options{Model: "sonnet", Effort: "high"}), " ")
+	if !strings.HasSuffix(got, "--resume s1 --model sonnet --effort high -- hi") {
+		t.Errorf("options placement wrong: %q", got)
+	}
+	if got := strings.Join(b.ChatArgs("hi", "", agent.Options{}), " "); strings.Contains(got, "--model") || strings.Contains(got, "--effort") {
+		t.Errorf("zero options must add no flags: %q", got)
+	}
+}
+
+func TestCheckOptions(t *testing.T) {
+	plain := New(agent.Settings{Command: "claude"})
+	if err := plain.CheckOptions(agent.Options{Model: "opus", Effort: "high"}); err != nil {
+		t.Errorf("no extra_args: %v", err)
+	}
+	for _, extra := range [][]string{{"--model", "opus"}, {"--model=opus"}} {
+		b := New(agent.Settings{Command: "claude", ExtraArgs: extra})
+		if err := b.CheckOptions(agent.Options{Model: "sonnet"}); err == nil {
+			t.Errorf("extra %v + model should conflict", extra)
+		}
+		if err := b.CheckOptions(agent.Options{Effort: "high"}); err != nil {
+			t.Errorf("extra %v + effort only should not conflict: %v", extra, err)
+		}
+	}
+	b := New(agent.Settings{Command: "claude", ExtraArgs: []string{"--effort=low"}})
+	if err := b.CheckOptions(agent.Options{Effort: "high"}); err == nil {
+		t.Error("extra --effort= + effort should conflict")
 	}
 }

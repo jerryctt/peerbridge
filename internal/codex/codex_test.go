@@ -94,7 +94,7 @@ func newBackend() *Backend {
 
 func TestBackendReviewArgsNativeWithExtraArgs(t *testing.T) {
 	b := New(agent.Settings{Command: "codex", ExtraArgs: []string{"-c", "model=o3"}})
-	args, native, err := b.ReviewArgs("uncommitted", "", "", "")
+	args, native, err := b.ReviewArgs("uncommitted", "", "", "", agent.Options{})
 	if err != nil || !native {
 		t.Fatalf("err=%v native=%v", err, native)
 	}
@@ -102,7 +102,7 @@ func TestBackendReviewArgsNativeWithExtraArgs(t *testing.T) {
 		t.Errorf("args = %q", got)
 	}
 	// With a prompt the positional goes last, after extra args.
-	args, _, _ = b.ReviewArgs("base", "main", "", "focus on auth")
+	args, _, _ = b.ReviewArgs("base", "main", "", "focus on auth", agent.Options{})
 	if args[0] != "review" || args[len(args)-1] == "model=o3" || !strings.Contains(args[len(args)-1], "focus on auth") {
 		t.Errorf("prompt should be the final positional: %v", args)
 	}
@@ -111,19 +111,19 @@ func TestBackendReviewArgsNativeWithExtraArgs(t *testing.T) {
 			t.Errorf("read-only check: disallowed arg %q", a)
 		}
 	}
-	if _, _, err := b.ReviewArgs("commit", "", "", ""); err == nil {
+	if _, _, err := b.ReviewArgs("commit", "", "", "", agent.Options{}); err == nil {
 		t.Error("commit without sha should error")
 	}
 }
 
 func TestBackendChatArgs(t *testing.T) {
 	b := newBackend()
-	got := strings.Join(b.ChatArgs("hello there", ""), " ")
+	got := strings.Join(b.ChatArgs("hello there", "", agent.Options{}), " ")
 	want := "exec --json --sandbox read-only --skip-git-repo-check --ignore-user-config -- hello there"
 	if got != want {
 		t.Errorf("new session:\n got %q\nwant %q", got, want)
 	}
-	got = strings.Join(b.ChatArgs("more", "thread-123"), " ")
+	got = strings.Join(b.ChatArgs("more", "thread-123", agent.Options{}), " ")
 	// `exec resume` rejects --sandbox; the policy goes through -c instead.
 	want = "exec resume --json --skip-git-repo-check --ignore-user-config -c sandbox_mode=\"read-only\" -- thread-123 more"
 	if got != want {
@@ -131,13 +131,13 @@ func TestBackendChatArgs(t *testing.T) {
 	}
 	// Extra args go after the fixed flags, before the positionals.
 	b2 := New(agent.Settings{Command: "codex", ExtraArgs: []string{"-m", "o3"}})
-	got = strings.Join(b2.ChatArgs("x", ""), " ")
+	got = strings.Join(b2.ChatArgs("x", "", agent.Options{}), " ")
 	if !strings.HasSuffix(got, "--ignore-user-config -m o3 -- x") {
 		t.Errorf("args = %q", got)
 	}
-	for _, a := range b.ChatArgs("x", "t") {
+	for _, a := range b.ChatArgs("x", "t", agent.Options{}) {
 		if a == "--sandbox" {
-			t.Errorf("resume must not receive --sandbox (codex rejects it): %v", b.ChatArgs("x", "t"))
+			t.Errorf("resume must not receive --sandbox (codex rejects it): %v", b.ChatArgs("x", "t", agent.Options{}))
 		}
 	}
 }
@@ -177,5 +177,60 @@ func TestBackendParseChatErrors(t *testing.T) {
 	}
 	if _, _, err = b.ParseChat(""); err == nil {
 		t.Error("empty output should error")
+	}
+}
+
+func TestOptionArgs(t *testing.T) {
+	b := newBackend()
+	o := agent.Options{Model: "gpt-5.5", Effort: "high"}
+	args, _, _ := b.ReviewArgs("uncommitted", "", "", "", o)
+	if got := strings.Join(args, " "); got != `review --uncommitted -c model="gpt-5.5" -c review_model="gpt-5.5" -c model_reasoning_effort="high"` {
+		t.Errorf("review args = %q", got)
+	}
+	args, _, _ = b.ReviewArgs("uncommitted", "", "", "focus", o)
+	if !strings.Contains(args[len(args)-1], "focus") || args[len(args)-2] != `model_reasoning_effort="high"` {
+		t.Errorf("prompt must stay the final positional after options: %v", args)
+	}
+	got := strings.Join(b.ChatArgs("hi", "t1", o), " ")
+	if !strings.HasSuffix(got, `-c model="gpt-5.5" -c model_reasoning_effort="high" -- t1 hi`) || strings.Contains(got, "review_model") {
+		t.Errorf("chat args = %q", got)
+	}
+	if got := strings.Join(b.ChatArgs("hi", "", agent.Options{}), " "); strings.Contains(got, "model") {
+		t.Errorf("zero options must add nothing: %q", got)
+	}
+}
+
+func TestCheckOptions(t *testing.T) {
+	model := agent.Options{Model: "gpt-5.5"}
+	effort := agent.Options{Effort: "high"}
+	cases := []struct {
+		extra         []string
+		model, effort bool // expect conflict for model / effort
+	}{
+		{nil, false, false},
+		{[]string{"-m", "o3"}, true, false},
+		{[]string{"-mo3"}, true, false},
+		{[]string{"--model", "o3"}, true, false},
+		{[]string{"--model=o3"}, true, false},
+		{[]string{"-c", "model=o3"}, true, false},
+		{[]string{"-c", " model = o3"}, true, false},
+		{[]string{"--config", "review_model=o3"}, true, false},
+		{[]string{"--config=model=o3"}, true, false},
+		{[]string{"-cmodel=o3"}, true, false},
+		{[]string{"-c", "model_reasoning_effort=low"}, false, true},
+		{[]string{"-c", "model_provider=x"}, false, false},
+		{[]string{"--search"}, false, false},
+	}
+	for _, c := range cases {
+		b := New(agent.Settings{Command: "codex", ExtraArgs: c.extra})
+		if err := b.CheckOptions(model); (err != nil) != c.model {
+			t.Errorf("extra %q + model: err=%v, want conflict=%v", c.extra, err, c.model)
+		}
+		if err := b.CheckOptions(effort); (err != nil) != c.effort {
+			t.Errorf("extra %q + effort: err=%v, want conflict=%v", c.extra, err, c.effort)
+		}
+		if err := b.CheckOptions(agent.Options{}); err != nil {
+			t.Errorf("extra %q + no options: %v", c.extra, err)
+		}
 	}
 }

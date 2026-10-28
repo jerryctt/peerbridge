@@ -75,6 +75,9 @@ takes 30s–3min because the peer reads the repo first. Do not start another
 
 ## Tips
 
+- Pass `model` / `effort` (low, medium, high, xhigh, max) only when the user
+  asks for a specific model or depth. They apply to that turn only; repeat them
+  on each `chat_start` if the whole discussion should use them.
 - Pass `agent` only when the user names a specific peer; otherwise the server
   picks the other vendor automatically.
 - Keep each message focused on one or two points; long monologues get

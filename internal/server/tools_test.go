@@ -82,6 +82,18 @@ func TestRegisteredTools(t *testing.T) {
 	if _, ok := byName["codex_review_start"].InputSchema.Properties["agent"]; ok {
 		t.Error("codex_review_start alias must not expose an agent param")
 	}
+	for _, tool := range []string{"review_start", "chat_start"} {
+		for _, p := range []string{"model", "effort"} {
+			if _, ok := byName[tool].InputSchema.Properties[p]; !ok {
+				t.Errorf("%s must take a %s param", tool, p)
+			}
+		}
+	}
+	for _, p := range []string{"model", "effort"} {
+		if _, ok := byName["codex_review_start"].InputSchema.Properties[p]; ok {
+			t.Errorf("codex_review_start alias schema must stay unchanged (no %s)", p)
+		}
+	}
 }
 
 func TestAliasToolRunsCodexReview(t *testing.T) {

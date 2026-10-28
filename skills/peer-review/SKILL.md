@@ -51,6 +51,7 @@ Options:
 - `scope="commit", commit="<SHA>"` — review one commit.
 - `agent="codex"` / `agent="claude"` — only when the user asked for a specific peer.
 - `prompt="focus on error handling"` — only when the user asked to narrow the review. Never restate the scope in the prompt.
+- `model="opus"` / `effort="high"` — only when the user asks for a specific model or for more/less depth ("deep review" → `effort="high"`, "quick look" → `effort="low"`). `effort` is one of low, medium, high, xhigh, max. Omit both otherwise; config defaults apply.
 
 The result contains `job_id` and `agent`. If there are no changes in scope,
 the peer says so in its verdict: tell the user and wait for more edits.

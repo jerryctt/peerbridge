@@ -58,7 +58,8 @@ Coding agents live in their own apps. [Claude](https://claude.ai) (Desktop / Cow
 - **Read-only peers** — the claude peer gets file-reading tools only (`--tools Read,Grep,Glob`, no shell; peerbridge computes the review diff with read-only git and feeds it to the peer on stdin) and loads no user settings or MCP servers (`--setting-sources "" --strict-mcp-config`); the codex peer runs in codex's own `--sandbox read-only` with `--ignore-user-config`. Neither can reach peerbridge recursively, and your normal CLI logins keep working.
 - **`codex_review_start` / `codex_review_status`** — deprecated aliases of `review_start(agent=codex)` / `job_status`; existing installs keep working.
 - **Strict security** — root-directory containment, symlink-resolved path checks, fixed read-only argv for peers, no general command execution, no shell ever.
-- **Configurable** — allowed roots, timeout, max output size, per-agent command path and extra flags.
+- **Model and effort per call** — `review_start` / `chat_start` take optional `model` and `effort` (`low`…`max`), with per-agent defaults in config.
+- **Configurable** — allowed roots, timeout, max output size, per-agent command path, extra flags, default model and effort.
 - **Audit log** — every tool invocation is logged to stderr via zerolog.
 
 ---
@@ -217,10 +218,14 @@ stream_output: true
 agents:
   codex:
     command: codex
-    extra_args: []              # e.g. ["-c", "model=o3"]
+    extra_args: []              # e.g. ["--search"]
+    # model: gpt-5.5            # default when a call passes no model
+    # effort: medium            # low | medium | high | xhigh | max
   claude:
     command: claude
-    extra_args: []              # e.g. ["--model", "opus"]
+    extra_args: []
+    # model: opus
+    # effort: high
 
 # Legacy, still honoured and appended to agents.codex.extra_args:
 # codex_extra_args: ["-c", "model=o3"]
@@ -272,6 +277,8 @@ All `folder` parameters are absolute **HOST** paths (e.g. `/Users/you/proj`), ne
 | `base` | string | no | Base branch or ref; required when `scope=base` (e.g. `main`) |
 | `commit` | string | no | Commit SHA; required when `scope=commit` |
 | `prompt` | string | no | Custom review instructions (e.g. `"focus on error handling"`). Only for an explicitly focused review. Safe with any `scope`. |
+| `model` | string | no | Peer model (see [Model and effort](#model-and-effort)) |
+| `effort` | string | no | `low`, `medium`, `high`, `xhigh` or `max` (see [Model and effort](#model-and-effort)) |
 
 `agent=codex` runs `codex review` (native, computes the diff itself). `agent=claude` runs `claude -p` with a review prompt that tells it to inspect the changes with read-only git commands.
 
@@ -293,6 +300,18 @@ folder: /Users/you/proj
 | `message` | string | yes | What to say. Include the context the peer needs — it only sees the repo and this conversation. |
 | `agent` | string | no | `codex` or `claude`; omit for automatic peer selection |
 | `session_id` | string | no | `session_id` from a previous `job_status` result, to continue that conversation |
+| `model` | string | no | Peer model for this turn |
+| `effort` | string | no | Reasoning effort for this turn: `low`, `medium`, `high`, `xhigh` or `max` |
+
+### Model and effort
+
+`model` and `effort` pick the peer's model and reasoning depth for one call, e.g. `review_start(folder=…, agent="claude", model="opus", effort="high")`.
+
+- **claude** gets `--model <model> --effort <effort>`; `model` is an alias (`opus`, `sonnet`, …) or a full model id.
+- **codex** gets `-c model="<model>"` (plus `-c review_model="<model>"` for reviews, so a `review_model` in your codex config doesn't win) and `-c model_reasoning_effort="<effort>"`.
+- Precedence: the call's value, else `agents.<name>.model` / `.effort` in `config.yaml`, else the CLI's own default. Each call resolves afresh; when continuing a chat, an omitted value is not re-sent and the CLI decides what to use.
+- Which efforts a model supports is up to the vendor CLI; an unsupported combination fails with the CLI's own error.
+- If `extra_args` already sets a model or effort (e.g. `["-m", "o3"]`), passing one too is rejected rather than guessing which flag wins: move it to `model:` / `effort:` in config.
 
 ### `job_status`
 
@@ -380,7 +399,7 @@ For a **discussion**, use `chat_start` with a focused message, read the reply fr
 
 - **Root-directory containment.** Every path argument is resolved (including symlinks) and checked against `allowed_roots`.
 - **No shell.** Commands are run as argv arrays via `os/exec`. There is no `sh -c`, no glob expansion, no shell injection.
-- **Read-only peers.** Peer argv is fixed by the server. codex uses `codex review` / `codex exec --sandbox read-only --ignore-user-config` (OS-level sandbox). claude has no sandbox, so it gets no shell at all: `-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`. For claude reviews peerbridge runs `git status`/`git diff`/`git show` itself and pipes the result to the peer on stdin — read-only and hardened: refs are validated (never option-like), `--no-ext-diff --no-textconv`, `core.fsmonitor=false`, `core.hooksPath=/dev/null`, global/system git config ignored (`GIT_CONFIG_GLOBAL=/dev/null` etc.) and `GIT_OPTIONAL_LOCKS=0`, so no diff helpers, filters or hooks run and nothing is written. Only `agents.<name>.command` and `extra_args` come from config.
+- **Read-only peers.** Peer argv is fixed by the server. codex uses `codex review` / `codex exec --sandbox read-only --ignore-user-config` (OS-level sandbox). claude has no sandbox, so it gets no shell at all: `-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`. For claude reviews peerbridge runs `git status`/`git diff`/`git show` itself and pipes the result to the peer on stdin — read-only and hardened: refs are validated (never option-like), `--no-ext-diff --no-textconv`, `core.fsmonitor=false`, `core.hooksPath=/dev/null`, global/system git config ignored (`GIT_CONFIG_GLOBAL=/dev/null` etc.) and `GIT_OPTIONAL_LOCKS=0`, so no diff helpers, filters or hooks run and nothing is written. Only `agents.<name>.command`, `extra_args`, and the validated `model` / `effort` come from config or the caller (models are restricted to letters, digits and `. _ : / -`, effort to a fixed list).
 - **No inherited permissions, no recursion.** `--setting-sources ""` keeps the user's own Claude permission rules and hooks out of the peer (`--allowedTools` is additive to settings, so this makes it the whole list); `--strict-mcp-config` (claude) and `--ignore-user-config` (codex) start the peer with none of the user's MCP servers, so it cannot load peerbridge itself. `--bare` is deliberately not used: it disables OAuth/keychain auth and would break subscription logins. `-c mcp_servers={}` was rejected: config overrides merge, they do not replace.
 - **No general command execution.** There is no tool that runs an arbitrary command: the only processes peerbridge starts are the peer CLIs with the fixed argv above and its own hardened read-only git. (`run_command` was removed in v0.5.0: even with an allowlist, `claude`/`codex`/`git` accept arguments that bypass the read-only design.)
 - **Native host process, not Docker.** Running in a container would break access to the host CLIs and their logins.
