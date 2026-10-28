@@ -7,6 +7,8 @@ English | [繁體中文](README_zh.md)
 
 Local MCP server + plugin for **Claude** and **Codex**: from either app, ask the *other* vendor's agent for a read-only code review or a multi-turn discussion of your code, running on your machine with your own CLI logins.
 
+> **v0.5.0: `run_command` removed.** peerbridge no longer runs arbitrary allowlisted commands; it only starts the peer CLIs with server-fixed, read-only arguments. Every tool is now read-only. `allowed_commands` in `config.yaml` is ignored (a warning is logged); you can delete it.
+
 > **Renamed from `hostrunner-mcp` (v0.3.2).** The old GitHub URL redirects. If you installed the previous version: the binary, MCP server, plugin and config directory are now called `peerbridge`. Your existing `~/.config/hostrunner/config.yaml` and `HOSTRUNNER_CONFIG` are still read until you move them; re-running `scripts/install-codex.sh` / `scripts/install.ps1` replaces the old `[mcp_servers.hostrunner]` block with `[mcp_servers.peerbridge]`; in Claude Desktop re-install the plugin as **peerbridge** (and remove the old **hostrunner** plugin), or update `claude_desktop_config.json` if you registered the binary by hand. Permission rules change accordingly (`mcp__plugin_peerbridge_peerbridge__*`). The MCP tool names (`review_start`, `chat_start`, `job_status`, `run_command`) are unchanged.
 
 ---
@@ -55,9 +57,8 @@ Coding agents live in their own apps. [Claude](https://claude.ai) (Desktop / Cow
 - **Automatic peer selection** — omit `agent` and a Claude client talks to codex, a Codex client talks to claude. Pass `agent` to pick explicitly.
 - **Read-only peers** — the claude peer gets file-reading tools only (`--tools Read,Grep,Glob`, no shell; peerbridge computes the review diff with read-only git and feeds it to the peer on stdin) and loads no user settings or MCP servers (`--setting-sources "" --strict-mcp-config`); the codex peer runs in codex's own `--sandbox read-only` with `--ignore-user-config`. Neither can reach peerbridge recursively, and your normal CLI logins keep working.
 - **`codex_review_start` / `codex_review_status`** — deprecated aliases of `review_start(agent=codex)` / `job_status`; existing installs keep working.
-- **`run_command`** — run any allowlisted CLI (e.g. `git`) in a host folder, as an argv array (never a shell).
-- **Strict security** — root-directory containment, symlink-resolved path checks, fixed read-only argv for peers, command allowlist for `run_command`, no shell ever.
-- **Configurable** — allowed roots, allowed commands, timeout, max output size, per-agent command path and extra flags.
+- **Strict security** — root-directory containment, symlink-resolved path checks, fixed read-only argv for peers, no general command execution, no shell ever.
+- **Configurable** — allowed roots, timeout, max output size, per-agent command path and extra flags.
 - **Audit log** — every tool invocation is logged to stderr via zerolog.
 
 ---
@@ -193,15 +194,8 @@ cp examples/config.example.yaml ~/.config/peerbridge/config.yaml
 allowed_roots:
   - /Users/yourname/code
 
-# CLI executables that run_command may invoke (peer agents do not use this
-# list; their argv is fixed by the server).
-allowed_commands:
-  - codex
-  - claude
-  - git
-
-# Maximum wall-clock time for a single command on the host (a review, one chat
-# turn, or a run_command). Must include a unit (e.g. 600s, 10m). Jobs run in
+# Maximum wall-clock time for a single job on the host (a review or one chat
+# turn). Must include a unit (e.g. 600s, 10m). Jobs run in
 # the background, so this can be much larger than the MCP client's per-call
 # limit.
 timeout: 600s
@@ -265,7 +259,6 @@ Restart Claude Desktop after editing the config. You should see **peerbridge** a
 | `chat_start(folder, message, agent?, session_id?)` | Send one message to the peer; returns `job_id`. Pass the `session_id` from the previous reply to continue the same conversation. |
 | `job_status(job_id)` | Long-poll (≤50s) for a job's result. |
 | `codex_review_start`, `codex_review_status` | Deprecated aliases of `review_start(agent=codex)` / `job_status`. |
-| `run_command(command, args, folder)` | Allowlisted argv in a host folder. |
 
 All `folder` parameters are absolute **HOST** paths (e.g. `/Users/you/proj`), never `/sessions/…` sandbox paths.
 
@@ -346,18 +339,6 @@ job_status(job_id="…")   → session_id: abc…  --- Claude reply --- …
 chat_start(folder="/Users/you/proj", session_id="abc…", message="Point 2 only applies to POST; does that change your view?")
 ```
 
-### `run_command`
-
-Run an allowlisted command (argv, no shell) in a host folder.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `command` | string | yes | Executable name; must be in `allowed_commands` |
-| `args` | string[] | no | Arguments as a string array |
-| `folder` | string | yes | Absolute **HOST** path inside an `allowed_root` |
-
-**Returns:** exit code, elapsed time, stdout, and stderr.
-
 ---
 
 ## Permission prompts
@@ -365,8 +346,8 @@ Run an allowlisted command (argv, no shell) in a host folder.
 Every host asks before running an MCP tool unless you tell it not to. A review is one `review_start` plus several `job_status` polls, so with the defaults you get a prompt every ~50 seconds. Three knobs:
 
 - **Fewer polls.** `status_poll` in `config.yaml` is how long `job_status` waits before answering "running". The example sets `100s` (safe with the `tool_timeout_sec = 120` our installers write and with Claude Desktop's ~180s); the built-in default is `50s`. It must stay below the client's per-call timeout.
-- **Codex.** The installers write `default_tools_approval_mode = "writes"` into the `[mcp_servers.peerbridge]` block: Codex then only asks for tools that are *not* marked read-only. `review_start`, `chat_start` and `job_status` carry the MCP `readOnlyHint` annotation (peers never modify anything), so they run without prompts; `run_command` still asks. Set it to `"approve"` to never ask, or override one tool with `[mcp_servers.peerbridge.tools.run_command] approval_mode = "approve"`.
-- **Claude.** In Claude Desktop / Cowork pick **Always allow** on the first prompt for each tool (it is remembered per tool). In Claude Code add a permission rule to `~/.claude/settings.json`: `{"permissions": {"allow": ["mcp__peerbridge__*"]}}` — for the marketplace plugin the server is named `plugin_peerbridge_peerbridge`, so use `"mcp__plugin_peerbridge_peerbridge__*"`. Claude Code does not yet act on `readOnlyHint` for MCP tools, hence the explicit rule.
+- **Codex.** The installers write `default_tools_approval_mode = "writes"` into the `[mcp_servers.peerbridge]` block: Codex then only asks for tools that are *not* marked read-only. `review_start`, `chat_start` and `job_status` carry the MCP `readOnlyHint` annotation (peers never modify anything), so they run without prompts. Since every peerbridge tool is read-only, Codex never asks; set it to `"prompt"` if you want to approve each call.
+- **Claude.** In Claude Desktop / Cowork pick **Always allow** on the first prompt for each tool (it is remembered per tool). In Claude Code add a permission rule to `~/.claude/settings.json`: `{"permissions": {"allow": ["mcp__peerbridge__*"]}}` — for the marketplace plugin the server is named `plugin_peerbridge_peerbridge`, so use `"mcp__plugin_peerbridge_peerbridge__*"`. Claude Code does not yet act on `readOnlyHint` for MCP tools, hence the explicit rule. The wildcard is safe: every peerbridge tool is read-only.
 
 ## Skills
 
@@ -399,9 +380,9 @@ For a **discussion**, use `chat_start` with a focused message, read the reply fr
 
 - **Root-directory containment.** Every path argument is resolved (including symlinks) and checked against `allowed_roots`.
 - **No shell.** Commands are run as argv arrays via `os/exec`. There is no `sh -c`, no glob expansion, no shell injection.
-- **Read-only peers.** Peer argv is fixed by the server. codex uses `codex review` / `codex exec --sandbox read-only --ignore-user-config` (OS-level sandbox). claude has no sandbox, so it gets no shell at all: `-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`. For claude reviews peerbridge runs `git status`/`git diff`/`git show` itself and pipes the result to the peer on stdin — read-only and hardened: refs are validated (never option-like), `--no-ext-diff --no-textconv`, `core.fsmonitor=false`, `core.hooksPath=/dev/null`, global/system git config ignored (`GIT_CONFIG_GLOBAL=/dev/null` etc.) and `GIT_OPTIONAL_LOCKS=0`, so no diff helpers, filters or hooks run and nothing is written. Only `agents.<name>.command` and `extra_args` come from config; `allowed_commands` applies to `run_command`.
+- **Read-only peers.** Peer argv is fixed by the server. codex uses `codex review` / `codex exec --sandbox read-only --ignore-user-config` (OS-level sandbox). claude has no sandbox, so it gets no shell at all: `-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`. For claude reviews peerbridge runs `git status`/`git diff`/`git show` itself and pipes the result to the peer on stdin — read-only and hardened: refs are validated (never option-like), `--no-ext-diff --no-textconv`, `core.fsmonitor=false`, `core.hooksPath=/dev/null`, global/system git config ignored (`GIT_CONFIG_GLOBAL=/dev/null` etc.) and `GIT_OPTIONAL_LOCKS=0`, so no diff helpers, filters or hooks run and nothing is written. Only `agents.<name>.command` and `extra_args` come from config.
 - **No inherited permissions, no recursion.** `--setting-sources ""` keeps the user's own Claude permission rules and hooks out of the peer (`--allowedTools` is additive to settings, so this makes it the whole list); `--strict-mcp-config` (claude) and `--ignore-user-config` (codex) start the peer with none of the user's MCP servers, so it cannot load peerbridge itself. `--bare` is deliberately not used: it disables OAuth/keychain auth and would break subscription logins. `-c mcp_servers={}` was rejected: config overrides merge, they do not replace.
-- **Command allowlist** for `run_command`.
+- **No general command execution.** There is no tool that runs an arbitrary command: the only processes peerbridge starts are the peer CLIs with the fixed argv above and its own hardened read-only git. (`run_command` was removed in v0.5.0: even with an allowlist, `claude`/`codex`/`git` accept arguments that bypass the read-only design.)
 - **Native host process, not Docker.** Running in a container would break access to the host CLIs and their logins.
 - **Host paths only.** Any path beginning with `/sessions/` is rejected with a hint.
 

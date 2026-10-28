@@ -41,10 +41,13 @@ func main() {
 		Str("config", cfgPath).
 		Str("timeout", cfg.Timeout.String()).
 		Strs("allowed_roots", cfg.AllowedRoots).
-		Strs("allowed_commands", cfg.AllowedCommands).
 		Str("codex_command", cfg.Agent("codex").Command).
 		Str("claude_command", cfg.Agent("claude").Command).
 		Msg("config loaded")
+	if len(cfg.AllowedCommands) > 0 {
+		log.Warn().Strs("allowed_commands", cfg.AllowedCommands).
+			Msg("allowed_commands is ignored: run_command was removed in v0.5.0; delete it from the config")
+	}
 
 	s, shutdown := internalserver.New(cfg, exec.Runner{}, log)
 	err = mcpserver.ServeStdio(s)

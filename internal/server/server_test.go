@@ -85,9 +85,8 @@ func newCfg(t *testing.T) (*config.Config, string) {
 		t.Fatal(err)
 	}
 	return &config.Config{
-		AllowedRoots:    []string{root},
-		AllowedCommands: []string{"codex", "claude", "git"},
-		MaxOutputBytes:  1000,
+		AllowedRoots:   []string{root},
+		MaxOutputBytes: 1000,
 	}, repo
 }
 
@@ -592,15 +591,5 @@ func TestJobStatusUnknownJob(t *testing.T) {
 	out, isErr := s.JobStatus(context.Background(), "nope", time.Millisecond)
 	if !isErr || !strings.Contains(out, "unknown job_id") {
 		t.Errorf("expected unknown job error, got %q isErr=%v", out, isErr)
-	}
-}
-
-func TestRunCommand(t *testing.T) {
-	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{"git status": {Stdout: "clean"}}})
-	if out, isErr := s.RunCommand(context.Background(), "rm", []string{"-rf", "/"}, repo); !isErr || !strings.Contains(out, "not allowed") {
-		t.Errorf("expected command rejection, got %q isErr=%v", out, isErr)
-	}
-	if out, isErr := s.RunCommand(context.Background(), "git", []string{"status"}, repo); isErr || !strings.Contains(out, "clean") {
-		t.Errorf("expected success, got %q isErr=%v", out, isErr)
 	}
 }

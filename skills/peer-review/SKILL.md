@@ -40,15 +40,7 @@ returns quickly, so the loop never hits that limit.
 
 ## Steps
 
-### 1. Confirm there is something to review (optional)
-
-```
-run_command(command="git", args=["status", "--short"], folder="/Users/you/proj")
-```
-
-Empty output means nothing to review yet.
-
-### 2. Start the review
+### 1. Start the review
 
 ```
 review_start(folder="/Users/you/proj")
@@ -60,9 +52,10 @@ Options:
 - `agent="codex"` / `agent="claude"` — only when the user asked for a specific peer.
 - `prompt="focus on error handling"` — only when the user asked to narrow the review. Never restate the scope in the prompt.
 
-The result contains `job_id` and `agent`.
+The result contains `job_id` and `agent`. If there are no changes in scope,
+the peer says so in its verdict: tell the user and wait for more edits.
 
-### 3. Poll
+### 2. Poll
 
 ```
 job_status(job_id="<job_id>")
@@ -73,14 +66,14 @@ Each call blocks up to ~50s and returns either the finished result or
 minutes. Do not start a second review for the same folder while one is running
 (the server refuses and tells you the running job_id).
 
-### 4. Read the verdict
+### 3. Read the verdict
 
 The verdict is the text under `--- Codex review ---` or `--- Claude review ---`.
 Decide from that text, **not** the exit code (`codex review` exits 0 even when
 it lists problems).
 
 - Concrete issues or risks → summarize as a numbered list, fix them with your
-  edit tools, then go to step 5.
+  edit tools, then go to step 4.
 - "No issues" / clean / approved → STOP and tell the user the review is clean.
 
 A non-zero `(<agent> exit N)` with a `--- <agent> stderr ---` section means the
@@ -92,10 +85,10 @@ its config. The result holds only the verdict; the peer's live progress trace
 is in the host's MCP log (on Claude Desktop for macOS:
 `~/Library/Logs/Claude/mcp-server-peerbridge.log`, while `stream_output` is on).
 
-### 5. Re-review
+### 4. Re-review
 
 After fixing, call `review_start` again with the same parameters (a fresh job)
-and poll as in step 3. Repeat from step 4 until clean.
+and poll as in step 2. Repeat from step 3 until clean.
 
 ## Tips
 

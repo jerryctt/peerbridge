@@ -108,9 +108,9 @@ args = []
 # (config.yaml) below this tool timeout.
 tool_timeout_sec = 120
 startup_timeout_sec = 20
-# Approval prompts: "writes" asks only for tools NOT marked read-only. The
-# peer tools (review_start, chat_start, job_status) are read-only, so only
-# run_command prompts. Use "approve" to never ask, "prompt" to always ask.
+# Approval prompts: "writes" asks only for tools NOT marked read-only. All
+# peerbridge tools (review_start, chat_start, job_status) are read-only, so
+# none prompt. Use "prompt" to always ask.
 default_tools_approval_mode = "writes"
 $END
 EOF

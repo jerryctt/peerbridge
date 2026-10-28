@@ -69,12 +69,11 @@ func DefaultPaths() []string {
 }
 
 type Config struct {
-	AllowedRoots    []string      `yaml:"allowed_roots"`
-	AllowedCommands []string      `yaml:"allowed_commands"`
-	Timeout         time.Duration `yaml:"timeout"`
-	MaxOutputBytes  int           `yaml:"max_output_bytes"`
-	CodexExtraArgs  []string      `yaml:"codex_extra_args"`
-	StreamOutput    *bool         `yaml:"stream_output"`
+	AllowedRoots   []string      `yaml:"allowed_roots"`
+	Timeout        time.Duration `yaml:"timeout"`
+	MaxOutputBytes int           `yaml:"max_output_bytes"`
+	CodexExtraArgs []string      `yaml:"codex_extra_args"`
+	StreamOutput   *bool         `yaml:"stream_output"`
 	// StatusPoll is how long job_status blocks waiting for a job before
 	// answering "running". Longer means fewer polls (and fewer permission
 	// prompts in the GUI) but it must stay under the MCP client's per-call
@@ -84,6 +83,9 @@ type Config struct {
 	// Agents holds per-peer CLI settings keyed by agent name ("codex",
 	// "claude"). Missing entries/fields fall back to DefaultAgents.
 	Agents map[string]AgentConfig `yaml:"agents"`
+	// AllowedCommands is ignored: it configured run_command, which was
+	// removed in v0.5.0. Still parsed so main can warn about stale configs.
+	AllowedCommands []string `yaml:"allowed_commands"`
 }
 
 // AgentConfig configures one peer CLI (see internal/agent.Settings).
@@ -160,15 +162,6 @@ func Load(path string) (*Config, error) {
 		c.AllowedRoots[i] = abs
 	}
 	return &c, nil
-}
-
-func (c *Config) CommandAllowed(name string) bool {
-	for _, a := range c.AllowedCommands {
-		if a == name {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *Config) StreamEnabled() bool {

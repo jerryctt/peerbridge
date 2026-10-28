@@ -64,7 +64,7 @@ func TestRegisteredTools(t *testing.T) {
 		byName[tl.Name] = tl
 	}
 	sort.Strings(names)
-	want := "chat_start,codex_review_start,codex_review_status,job_status,review_start,run_command"
+	want := "chat_start,codex_review_start,codex_review_status,job_status,review_start"
 	if got := strings.Join(names, ","); got != want {
 		t.Errorf("tools = %s\nwant    %s", got, want)
 	}
@@ -138,15 +138,8 @@ func TestReadOnlyAnnotations(t *testing.T) {
 	for _, tl := range list.Tools {
 		ro := tl.Annotations.ReadOnlyHint
 		isRO := ro != nil && *ro
-		switch tl.Name {
-		case "run_command":
-			if isRO {
-				t.Errorf("run_command must NOT be marked read-only")
-			}
-		default:
-			if !isRO {
-				t.Errorf("%s should be marked readOnlyHint", tl.Name)
-			}
+		if !isRO {
+			t.Errorf("%s should be marked readOnlyHint", tl.Name)
 		}
 		if tl.Name == "job_status" && !strings.Contains(tl.Description, "~1m40s") {
 			t.Errorf("job_status description should reflect status_poll: %q", tl.Description)

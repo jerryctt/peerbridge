@@ -7,6 +7,8 @@
 
 給 **Claude** 與 **Codex** 共用的本機 MCP server + plugin：在任一邊的 app 裡，都能請*另一家*的 agent 對你的程式碼做唯讀 code review，或進行多輪討論——全部在你自己的機器上、用你自己的 CLI 登入執行。
 
+> **v0.5.0：移除 `run_command`。** peerbridge 不再執行任意允許清單中的指令，只會以 server 固定的唯讀參數啟動 peer CLI，所有工具現在都是唯讀。`config.yaml` 裡的 `allowed_commands` 會被忽略（並記一行警告），可以刪掉。
+
 > **自 `hostrunner-mcp` 改名（v0.3.2）。** 舊的 GitHub 網址會自動轉址。若你裝過舊版：binary、MCP server、plugin 與設定目錄現在都叫 `peerbridge`。既有的 `~/.config/hostrunner/config.yaml` 與 `HOSTRUNNER_CONFIG` 在你搬移前仍會被讀取；重新執行 `scripts/install-codex.sh` / `scripts/install.ps1` 會把舊的 `[mcp_servers.hostrunner]` 區塊換成 `[mcp_servers.peerbridge]`；Claude Desktop 請重新安裝 **peerbridge** plugin（並移除舊的 **hostrunner**），手動註冊 binary 的話請更新 `claude_desktop_config.json`。權限規則也隨之改成 `mcp__plugin_peerbridge_peerbridge__*`。MCP 工具名稱（`review_start`、`chat_start`、`job_status`、`run_command`）不變。
 
 ---
@@ -55,9 +57,8 @@ Coding agent 各自活在自己的 app 裡。[Claude](https://claude.ai)（Deskt
 - **自動選 peer** — 不帶 `agent` 時，Claude client 會找 codex、Codex client 會找 claude；要指定就傳 `agent`。
 - **唯讀 peer** — claude peer 只拿到讀檔工具（`--tools Read,Grep,Glob`，沒有 shell；review 用的 diff 由 peerbridge 以唯讀 git 算好、經 stdin 餵給 peer），且不載入任何使用者設定與 MCP server（`--setting-sources "" --strict-mcp-config`）；codex peer 跑在 codex 自己的 `--sandbox read-only` 並加 `--ignore-user-config`。兩者都無法遞迴呼叫 peerbridge，你原本的 CLI 登入照常有效。
 - **`codex_review_start` / `codex_review_status`** — 已棄用的別名，等同 `review_start(agent=codex)` / `job_status`；既有安裝照常可用。
-- **`run_command`** — 在主機資料夾內以 argv 陣列（絕不經過 shell）執行任何允許清單中的 CLI（例如 `git`）。
-- **嚴格安全** — 根目錄限制、符號連結解析後的路徑檢查、peer 的 argv 固定且唯讀、`run_command` 的指令允許清單、絕不使用 shell。
-- **可設定** — 允許的根目錄、允許的指令、timeout、輸出上限、各 agent 的指令路徑與額外旗標。
+- **嚴格安全** — 根目錄限制、符號連結解析後的路徑檢查、peer 的 argv 固定且唯讀、不提供任意指令執行、絕不使用 shell。
+- **可設定** — 允許的根目錄、timeout、輸出上限、各 agent 的指令路徑與額外旗標。
 - **審計日誌** — 每次工具呼叫都透過 zerolog 寫到 stderr。
 
 ---
@@ -192,13 +193,7 @@ cp examples/config.example.yaml ~/.config/peerbridge/config.yaml
 allowed_roots:
   - /Users/yourname/code
 
-# run_command 可執行的 CLI（peer agent 不看這份清單，其 argv 由 server 固定）。
-allowed_commands:
-  - codex
-  - claude
-  - git
-
-# 主機上單一指令（一次 review、一輪 chat、或一次 run_command）的最長時間。
+# 主機上單一 job（一次 review 或一輪 chat）的最長時間。
 # 必須帶單位（600s、10m）。job 在背景執行，所以可以遠大於 MCP client 的單次呼叫時限。
 timeout: 600s
 
@@ -260,7 +255,6 @@ agents:
 | `chat_start(folder, message, agent?, session_id?)` | 送一則訊息給 peer；回傳 `job_id`。帶上前一次回覆的 `session_id` 即可續接同一段對話。 |
 | `job_status(job_id)` | long-poll（≤50 秒）取得 job 結果。 |
 | `codex_review_start`、`codex_review_status` | 已棄用，等同 `review_start(agent=codex)` / `job_status`。 |
-| `run_command(command, args, folder)` | 在主機資料夾執行允許清單中的 argv。 |
 
 所有 `folder` 參數都是**主機**絕對路徑（例如 `/Users/you/proj`），絕不是 `/sessions/…` 沙箱路徑。
 
@@ -341,18 +335,6 @@ job_status(job_id="…")   → session_id: abc…  --- Claude reply --- …
 chat_start(folder="/Users/you/proj", session_id="abc…", message="Point 2 only applies to POST; does that change your view?")
 ```
 
-### `run_command`
-
-在主機資料夾執行允許清單中的指令（argv，無 shell）。
-
-| 參數 | 型別 | 必填 | 說明 |
-|---|---|---|---|
-| `command` | string | 是 | 執行檔名稱；必須在 `allowed_commands` 內 |
-| `args` | string[] | 否 | 參數字串陣列 |
-| `folder` | string | 是 | `allowed_root` 內的**主機**絕對路徑 |
-
-**回傳：** exit code、耗時、stdout、stderr。
-
 ---
 
 ## 權限詢問
@@ -360,8 +342,8 @@ chat_start(folder="/Users/you/proj", session_id="abc…", message="Point 2 only 
 每個 host 預設都會在執行 MCP 工具前詢問；一次 review 是一個 `review_start` 加上好幾次 `job_status` 輪詢，所以預設下大約每 50 秒就會被問一次。有三個地方可以調：
 
 - **減少輪詢次數。** `config.yaml` 的 `status_poll` 是 `job_status` 回「running」前最多等多久。範例設 `100s`（配合安裝腳本寫入的 `tool_timeout_sec = 120` 與 Claude Desktop 約 180 秒的上限都安全），內建預設 `50s`。一定要低於 client 的單次呼叫時限。
-- **Codex。** 安裝腳本會在 `[mcp_servers.peerbridge]` 區塊寫入 `default_tools_approval_mode = "writes"`：Codex 只會對*沒有*標為唯讀的工具詢問。`review_start`、`chat_start`、`job_status` 都帶 MCP 的 `readOnlyHint` 註解（peer 從不改任何東西），所以不會被問；`run_command` 仍會問。改成 `"approve"` 就完全不問，或用 `[mcp_servers.peerbridge.tools.run_command] approval_mode = "approve"` 單獨放行某個工具。
-- **Claude。** Claude Desktop / Cowork 在每個工具第一次詢問時選 **Always allow**（會以工具為單位記住）。Claude Code 則在 `~/.claude/settings.json` 加權限規則：`{"permissions": {"allow": ["mcp__peerbridge__*"]}}`——若是透過 marketplace plugin 安裝，server 名稱是 `plugin_peerbridge_peerbridge`，要寫 `"mcp__plugin_peerbridge_peerbridge__*"`。Claude Code 目前不會依 `readOnlyHint` 自動放行 MCP 工具，所以要明確加規則。
+- **Codex。** 安裝腳本會在 `[mcp_servers.peerbridge]` 區塊寫入 `default_tools_approval_mode = "writes"`：Codex 只會對*沒有*標為唯讀的工具詢問。`review_start`、`chat_start`、`job_status` 都帶 MCP 的 `readOnlyHint` 註解（peer 從不改任何東西），所以不會被問。peerbridge 的工具全都是唯讀，所以 Codex 完全不會問；想每次都確認就改成 `"prompt"`。
+- **Claude。** Claude Desktop / Cowork 在每個工具第一次詢問時選 **Always allow**（會以工具為單位記住）。Claude Code 則在 `~/.claude/settings.json` 加權限規則：`{"permissions": {"allow": ["mcp__peerbridge__*"]}}`——若是透過 marketplace plugin 安裝，server 名稱是 `plugin_peerbridge_peerbridge`，要寫 `"mcp__plugin_peerbridge_peerbridge__*"`。Claude Code 目前不會依 `readOnlyHint` 自動放行 MCP 工具，所以要明確加規則。萬用字元是安全的：peerbridge 的工具全都是唯讀。
 
 ## Skills
 
@@ -394,9 +376,9 @@ Claude marketplace plugin 與 `scripts/install-codex.sh` 會自動安裝它們�
 
 - **根目錄限制。** 每個路徑參數都解析（含符號連結）後對照 `allowed_roots`。
 - **無 shell。** 指令以 argv 陣列經 `os/exec` 執行，沒有 `sh -c`、沒有 glob 展開、沒有 shell injection。
-- **唯讀 peer。** peer 的 argv 由 server 固定。codex 用 `codex review` / `codex exec --sandbox read-only --ignore-user-config`（OS 層沙箱）。claude 沒有沙箱，所以完全不給 shell：`-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`。claude review 的 `git status`/`git diff`/`git show` 由 peerbridge 自己執行並經 stdin 餵給 peer——唯讀且加固：ref 會先驗證（不可能像選項）、`--no-ext-diff --no-textconv`、`core.fsmonitor=false`、`core.hooksPath=/dev/null`、忽略 global/system git config（`GIT_CONFIG_GLOBAL=/dev/null` 等）並設 `GIT_OPTIONAL_LOCKS=0`，所以不會跑任何 diff helper、filter 或 hook，也不會寫入任何東西。只有 `agents.<name>.command` 與 `extra_args` 來自設定；`allowed_commands` 只管 `run_command`。
+- **唯讀 peer。** peer 的 argv 由 server 固定。codex 用 `codex review` / `codex exec --sandbox read-only --ignore-user-config`（OS 層沙箱）。claude 沒有沙箱，所以完全不給 shell：`-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`。claude review 的 `git status`/`git diff`/`git show` 由 peerbridge 自己執行並經 stdin 餵給 peer——唯讀且加固：ref 會先驗證（不可能像選項）、`--no-ext-diff --no-textconv`、`core.fsmonitor=false`、`core.hooksPath=/dev/null`、忽略 global/system git config（`GIT_CONFIG_GLOBAL=/dev/null` 等）並設 `GIT_OPTIONAL_LOCKS=0`，所以不會跑任何 diff helper、filter 或 hook，也不會寫入任何東西。只有 `agents.<name>.command` 與 `extra_args` 來自設定。
 - **不繼承權限、不遞迴。** `--setting-sources ""` 讓使用者自己的 Claude 權限規則與 hook 不會進到 peer（`--allowedTools` 是疊加在設定之上的，這樣它才是完整清單）；`--strict-mcp-config`（claude）與 `--ignore-user-config`（codex）讓 peer 啟動時沒有使用者的任何 MCP server，所以不會載入 peerbridge 自己。刻意不用 `--bare`：它會關閉 OAuth/keychain 認證，訂閱登入會失效。`-c mcp_servers={}` 也被否決：config 覆寫是合併而非取代。
-- **`run_command` 指令允許清單。**
+- **不提供任意指令執行。** 沒有任何工具能跑任意指令：peerbridge 只會啟動帶上述固定 argv 的 peer CLI，以及它自己加固過的唯讀 git。（`run_command` 已在 v0.5.0 移除：即使有允許清單，`claude`/`codex`/`git` 都能靠參數繞過唯讀設計。）
 - **原生程序，非 Docker。** 容器化會失去主機 CLI 與登入狀態的存取。
 - **僅主機路徑。** 以 `/sessions/` 開頭的路徑一律拒絕並給出提示。
 

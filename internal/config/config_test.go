@@ -30,8 +30,10 @@ func TestLoadDefaultsAndValues(t *testing.T) {
 	if c.MaxOutputBytes != 200000 {
 		t.Errorf("default max = %d, want 200000", c.MaxOutputBytes)
 	}
-	if !c.CommandAllowed("codex") || c.CommandAllowed("rm") {
-		t.Errorf("CommandAllowed wrong")
+	// allowed_commands is obsolete (run_command was removed) but old configs
+	// that still set it must keep loading.
+	if len(c.AllowedCommands) != 2 {
+		t.Errorf("legacy allowed_commands not parsed: %v", c.AllowedCommands)
 	}
 }
 

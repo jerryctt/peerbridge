@@ -21,7 +21,7 @@ import (
 
 // version is reported in the MCP initialize handshake. Keep in sync with
 // .claude-plugin/plugin.json.
-const version = "0.4.0"
+const version = "0.5.0"
 
 // New builds the MCP server. The returned shutdown func cancels any
 // still-running background jobs (killing their CLI process groups) and
@@ -82,8 +82,8 @@ func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCP
 	// Annotations: the peer tools never modify the host (peers are read-only
 	// and the server only reads the repo), so they are marked readOnlyHint.
 	// Codex honours this with default_tools_approval_mode = "writes" (prompt
-	// only for non-read-only tools); run_command stays unannotated so it keeps
-	// prompting.
+	// only for non-read-only tools). Every tool is read-only: there is no
+	// general command-execution tool (run_command was removed in v0.5.0).
 	readOnly := []mcp.ToolOption{
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
@@ -136,23 +136,6 @@ func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCP
 		mcp.WithDescription("Deprecated: use job_status. Same behaviour: "+pollDesc+" and returns the finished review or a 'running' notice."),
 		mcp.WithString("job_id", mcp.Required(), mcp.Description("The job_id returned by codex_review_start / review_start")),
 	)...), statusHandler)
-
-	s.AddTool(mcp.NewTool("run_command",
-		mcp.WithDescription("Run an allowlisted command (argv, no shell) in a host folder."),
-		mcp.WithString("command", mcp.Required(), mcp.Description("Executable name; must be in the server allowlist")),
-		mcp.WithArray("args", mcp.WithStringItems(), mcp.Description("Arguments as a string array")),
-		folderOpt,
-	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		command, err := req.RequireString("command")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		folder, err := req.RequireString("folder")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		return text(svc.RunCommand(ctx, command, req.GetStringSlice("args", nil), folder))
-	})
 
 	return s, func() { svc.Jobs.shutdown(3 * time.Second) }
 }
@@ -618,30 +601,4 @@ func diagnostics(b agent.Backend, res exec.Result, timeout time.Duration) string
 		out.WriteString("\n[output truncated]\n")
 	}
 	return out.String()
-}
-
-// RunCommand runs an allowlisted argv in a host folder.
-func (s *Service) RunCommand(ctx context.Context, command string, args []string, folder string) (string, bool) {
-	if !s.Cfg.CommandAllowed(command) {
-		return fmt.Sprintf("command %q is not allowed", command), true
-	}
-	dir, err := s.Cfg.ResolveAllowedDir(folder)
-	if err != nil {
-		return err.Error(), true
-	}
-	res, err := s.Runner.Run(ctx, exec.Request{
-		Command: command, Args: args, Dir: dir, Timeout: s.Cfg.Timeout, MaxOutputBytes: s.Cfg.MaxOutputBytes,
-		StreamTo: s.streamTo(),
-	})
-	if err != nil {
-		s.Log.Info().Str("tool", "run_command").Str("command", command).Str("folder", dir).Err(err).Msg("invocation")
-		return err.Error(), true
-	}
-	s.Log.Info().Str("tool", "run_command").Str("command", command).Str("folder", dir).Int("exit", res.ExitCode).Dur("elapsed", res.Elapsed).Msg("invocation")
-	var b strings.Builder
-	fmt.Fprintf(&b, "exit=%d elapsed=%s\n--- stdout ---\n%s\n--- stderr ---\n%s\n", res.ExitCode, res.Elapsed, res.Stdout, res.Stderr)
-	if res.TimedOut {
-		b.WriteString("[timed out]\n")
-	}
-	return b.String(), false
 }

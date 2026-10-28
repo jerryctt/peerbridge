@@ -9,7 +9,7 @@
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Codex     # Codex only
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Claude    # Claude Desktop only
     ... -Local .\peerbridge.exe      use a locally built binary instead of downloading
-    ... -Version 0.4.0               pin a release (default: version in .claude-plugin\plugin.json)
+    ... -Version 0.5.0               pin a release (default: version in .claude-plugin\plugin.json)
     ... -ServerName peerbridge       MCP server name used in both configs
     ... -NoClaudeConfigWrite         print the Claude Desktop JSON snippet instead of merging it
 
@@ -221,9 +221,9 @@ if ($Codex) {
     "# (config.yaml) below this tool timeout.",
     "tool_timeout_sec = 120",
     "startup_timeout_sec = 20",
-    "# Approval prompts: 'writes' asks only for tools NOT marked read-only. The",
-    "# peer tools (review_start, chat_start, job_status) are read-only, so only",
-    "# run_command prompts. Use 'approve' to never ask, 'prompt' to always ask.",
+    "# Approval prompts: 'writes' asks only for tools NOT marked read-only. All",
+    "# peerbridge tools (review_start, chat_start, job_status) are read-only, so",
+    "# none prompt. Use 'prompt' to always ask.",
     'default_tools_approval_mode = "writes"',
     $end
   )
