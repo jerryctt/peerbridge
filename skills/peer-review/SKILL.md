@@ -70,8 +70,10 @@ minutes. Do not start a second review for the same folder while one is running
 ### 3. Read the verdict
 
 The verdict is the text under `--- Codex review ---` or `--- Claude review ---`.
-Decide from that text, **not** the exit code (`codex review` exits 0 even when
-it lists problems).
+Decide from that text, **not** the exit code (codex exits 0 even when the
+review lists problems). The result also carries `conversation_id: <id>`: to
+ask the reviewer about a finding, use `chat_start(conversation_id="<id>")`
+instead of starting a new review.
 
 - Concrete issues or risks → summarize as a numbered list, fix them with your
   edit tools, then go to step 4.

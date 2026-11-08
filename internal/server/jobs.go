@@ -16,18 +16,22 @@ import (
 // keepFinished is how long a finished job's result stays retrievable.
 const keepFinished = 30 * time.Minute
 
-// job is a background peer-agent invocation (review or chat). The
+// job is a background peer-agent invocation (review, chat or task). The
 // output/isErr/ended fields are written exactly once by finish() before done
 // is closed; readers must only access them after observing <-done (the
 // channel close provides the happens-before edge).
 type job struct {
-	ID      string
-	Folder  string
-	Root    string // worktree root; part of the duplicate-detection key
-	Agent   string
-	Kind    agent.Kind
-	Mode    string // review scope label, or "" for chat
-	Started time.Time
+	ID     string
+	Folder string
+	Root   string // worktree root; part of the duplicate-detection key
+	Agent  string
+	Kind   agent.Kind
+	Mode   string // review scope label, or "" for chat
+	// Conversation is the conversation a chat/task turn continues ("" for a
+	// new one); Worktree is a task's worktree ("" until one is created).
+	Conversation string
+	Worktree     string
+	Started      time.Time
 
 	done   chan struct{}
 	output string
@@ -89,36 +93,83 @@ func (s *jobStore) shutdown(grace time.Duration) {
 	}
 }
 
-// add registers a new job. It refuses to start a second job with the same
-// (worktree root, agent, kind) while one is running: each job spawns a
-// long-running CLI process on the host, so retries or impatient clients must
-// poll the existing job instead of stacking processes. Different agents or
-// kinds on the same repo (a codex review plus a claude chat) may run together.
+// jobSpec describes a job to register; see addSpec for the locking rules.
+type jobSpec struct {
+	Folder       string
+	Agent        string
+	Kind         agent.Kind
+	Mode         string
+	Conversation string // conversation this turn continues, if any
+	Worktree     string // task: existing worktree being reused, if any
+	MaxTasks     int    // task: cap on concurrently running tasks (0 = none)
+}
+
+// add registers a review or chat job (see addSpec).
 func (s *jobStore) add(folder, agentName string, kind agent.Kind, mode string) (*job, error) {
-	root := worktreeRoot(folder)
+	return s.addSpec(jobSpec{Folder: folder, Agent: agentName, Kind: kind, Mode: mode})
+}
+
+// addSpec registers a new job, refusing it while a conflicting one runs:
+//   - review/chat: same (worktree root, agent, kind). Each job spawns a
+//     long-running CLI on the host, so retries must poll the existing job
+//     instead of stacking processes. Different agents or kinds on the same
+//     repo (a codex review plus a claude chat) may run together.
+//   - any kind: same (agent, conversation), so two turns never write the
+//     same conversation concurrently.
+//   - task: same worktree (one writer at a time), and at most MaxTasks
+//     running tasks. Tasks on the same repo in different worktrees (codex
+//     and claude implementing side by side) are allowed.
+func (s *jobStore) addSpec(sp jobSpec) (*job, error) {
+	root := worktreeRoot(sp.Folder)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gcLocked()
+	running := func(j *job) string {
+		return fmt.Sprintf("(job %s, started %s ago); poll job_status with that job_id instead of starting another", j.ID, time.Since(j.Started).Round(time.Second))
+	}
+	tasks := 0
 	for _, j := range s.jobs {
-		if j.Root == root && j.Agent == agentName && j.Kind == kind && !j.finished() {
-			return nil, fmt.Errorf(
-				"a %s %s of %s is already running (job %s, started %s ago); poll job_status with that job_id instead of starting another",
-				agentName, kind, j.Folder, j.ID, time.Since(j.Started).Round(time.Second),
-			)
+		if j.finished() {
+			continue
+		}
+		if sp.Kind != agent.KindTask && j.Kind == sp.Kind && j.Root == root && j.Agent == sp.Agent {
+			return nil, fmt.Errorf("a %s %s of %s is already running %s", sp.Agent, sp.Kind, j.Folder, running(j))
+		}
+		if sp.Conversation != "" && j.Agent == sp.Agent && j.Conversation == sp.Conversation {
+			return nil, fmt.Errorf("conversation %s already has a running %s turn %s", sp.Conversation, j.Kind, running(j))
+		}
+		if j.Kind == agent.KindTask {
+			tasks++
+			if sp.Worktree != "" && j.Worktree == sp.Worktree {
+				return nil, fmt.Errorf("a task is already working in %s %s", sp.Worktree, running(j))
+			}
 		}
 	}
+	if sp.Kind == agent.KindTask && sp.MaxTasks > 0 && tasks >= sp.MaxTasks {
+		return nil, fmt.Errorf("%d tasks are already running (tasks.max_running = %d); wait for one to finish", tasks, sp.MaxTasks)
+	}
 	j := &job{
-		ID:      newJobID(),
-		Folder:  folder,
-		Root:    root,
-		Agent:   agentName,
-		Kind:    kind,
-		Mode:    mode,
-		Started: time.Now(),
-		done:    make(chan struct{}),
+		ID:           newJobID(),
+		Folder:       sp.Folder,
+		Root:         root,
+		Agent:        sp.Agent,
+		Kind:         sp.Kind,
+		Mode:         sp.Mode,
+		Conversation: sp.Conversation,
+		Worktree:     sp.Worktree,
+		Started:      time.Now(),
+		done:         make(chan struct{}),
 	}
 	s.jobs[j.ID] = j
 	return j, nil
+}
+
+// setWorktree records the worktree a new task created, so later tasks see
+// the writer lock.
+func (s *jobStore) setWorktree(j *job, wt string) {
+	s.mu.Lock()
+	j.Worktree = wt
+	s.mu.Unlock()
 }
 
 func (s *jobStore) get(id string) (*job, bool) {

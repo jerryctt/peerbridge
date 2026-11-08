@@ -12,7 +12,7 @@
 #      (replacing a previous managed block, leaving the rest untouched;
 #      refuses if an unmanaged [mcp_servers.<name>] table already exists)
 #      and links the binary at ~/.local/bin/peerbridge
-#   3. copies skills/peer-review and skills/peer-chat into ~/.agents/skills/
+#   3. copies skills/peer-review, peer-chat and peer-task into ~/.agents/skills/
 #   4. creates ~/.config/peerbridge/config.yaml from the example if missing
 set -eu
 
@@ -108,9 +108,9 @@ args = []
 # (config.yaml) below this tool timeout.
 tool_timeout_sec = 120
 startup_timeout_sec = 20
-# Approval prompts: "writes" asks only for tools NOT marked read-only. All
-# peerbridge tools (review_start, chat_start, job_status) are read-only, so
-# none prompt. Use "prompt" to always ask.
+# Approval prompts: "writes" asks only for tools NOT marked read-only:
+# review_start, chat_start and job_status never prompt; task_start (only
+# listed when tasks are enabled) does. Use "prompt" to always ask.
 default_tools_approval_mode = "writes"
 $END
 EOF
@@ -145,7 +145,7 @@ fi
 # 3. skills
 SKILLS="$HOME/.agents/skills"
 mkdir -p "$SKILLS"
-for s in peer-review peer-chat; do
+for s in peer-review peer-chat peer-task; do
   rm -rf "$SKILLS/$s"
   cp -R "$ROOT/skills/$s" "$SKILLS/$s"
   echo "skill: $SKILLS/$s"

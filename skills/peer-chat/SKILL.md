@@ -18,9 +18,13 @@ relays messages and keeps the peer's session alive.
 
 1. `chat_start(folder, message)` — opens a new conversation. Returns `job_id`.
 2. `job_status(job_id)` — poll until done. The result starts with
-   `session_id: <id>` followed by `--- <Agent> reply ---`.
-3. To continue, call `chat_start(folder, message, session_id="<id>")`. The peer
-   remembers the earlier turns.
+   `conversation_id: <id>` followed by `--- <Agent> reply ---`.
+3. To continue, call `chat_start(folder, message, conversation_id="<id>")`. The
+   peer remembers the earlier turns. Always use `conversation_id`, not the old
+   `session_id` name: some hosts (Claude Desktop / Cowork) drop an argument
+   called `session_id`, and the turn silently starts a new conversation. If the
+   start message says "a new conversation" although you passed an id, the id
+   was lost — re-state the context.
 4. Stop when the user's question is answered, both sides agree, or the user
    asked for a fixed number of rounds. Then summarize both positions and your
    recommendation.
@@ -53,7 +57,7 @@ Follow-ups should respond to the peer's points, not restart:
 ```
 chat_start(
   folder="/Users/you/proj",
-  session_id="<from job_status>",
+  conversation_id="<from job_status>",
   message="On your point 2: the idempotency concern applies only to POST /orders; GETs are safe. Does that change your recommendation? Anything else blocking?"
 )
 ```
@@ -69,7 +73,7 @@ takes 30s–3min because the peer reads the repo first. Do not start another
 
 - `<Agent> chat failed (<agent> exit N)` with a stderr section: the peer CLI is
   not installed, not logged in, or rejected a flag — report that to the user.
-- An unknown or expired `session_id` surfaces as a CLI error; start a new
+- An unknown or expired `conversation_id` surfaces as a CLI error; start a new
   conversation and re-state the context.
 - `cannot infer which agent to use`: pass `agent="codex"` or `agent="claude"`.
 
@@ -82,4 +86,8 @@ takes 30s–3min because the peer reads the repo first. Do not start another
   picks the other vendor automatically.
 - Keep each message focused on one or two points; long monologues get
   shallow answers.
+- A `conversation_id` from a review result works here too: use it to ask the
+  reviewer about its findings ("what exactly is wrong in finding 2?").
+- To have the peer implement what you agreed on, pass the same
+  `conversation_id` to `task_start` (if enabled; see the peer-task skill).
 - Finished results stay retrievable via `job_status` for ~30 minutes.

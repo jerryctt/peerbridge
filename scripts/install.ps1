@@ -9,7 +9,7 @@
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Codex     # Codex only
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Claude    # Claude Desktop only
     ... -Local .\peerbridge.exe      use a locally built binary instead of downloading
-    ... -Version 0.6.0               pin a release (default: version in .claude-plugin\plugin.json)
+    ... -Version 0.7.0               pin a release (default: version in .claude-plugin\plugin.json)
     ... -ServerName peerbridge       MCP server name used in both configs
     ... -NoClaudeConfigWrite         print the Claude Desktop JSON snippet instead of merging it
 
@@ -18,8 +18,8 @@
        it against checksums.txt and installs peerbridge.exe to %LOCALAPPDATA%\peerbridge
     2. creates %APPDATA%\peerbridge\config.yaml from the example if missing
     3. Codex: writes a managed [mcp_servers.<name>] block to %USERPROFILE%\.codex\config.toml
-       (refuses if an unmanaged definition exists), copies skills\peer-review and
-       skills\peer-chat to %USERPROFILE%\.agents\skills, validates with 'codex mcp list'
+       (refuses if an unmanaged definition exists), copies skills\peer-review,
+       peer-chat and peer-task to %USERPROFILE%\.agents\skills, validates with 'codex mcp list'
     4. Claude Desktop: merges mcpServers.<name> into %APPDATA%\Claude\claude_desktop_config.json
        (backup kept next to it)
 #>
@@ -221,9 +221,9 @@ if ($Codex) {
     "# (config.yaml) below this tool timeout.",
     "tool_timeout_sec = 120",
     "startup_timeout_sec = 20",
-    "# Approval prompts: 'writes' asks only for tools NOT marked read-only. All",
-    "# peerbridge tools (review_start, chat_start, job_status) are read-only, so",
-    "# none prompt. Use 'prompt' to always ask.",
+    "# Approval prompts: 'writes' asks only for tools NOT marked read-only:",
+    "# review_start, chat_start and job_status never prompt; task_start (only",
+    "# listed when tasks are enabled) does. Use 'prompt' to always ask.",
     'default_tools_approval_mode = "writes"',
     $end
   )
@@ -257,7 +257,7 @@ if ($Codex) {
 
   $skills = Join-Path $home_ ".agents\skills"
   New-Item -ItemType Directory -Force -Path $skills | Out-Null
-  foreach ($s in @("peer-review", "peer-chat")) {
+  foreach ($s in @("peer-review", "peer-chat", "peer-task")) {
     $dst = Join-Path $skills $s
     if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
     Copy-Item -Recurse (Join-Path $Root "skills\$s") $dst

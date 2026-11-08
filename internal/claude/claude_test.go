@@ -107,3 +107,29 @@ func TestCheckOptions(t *testing.T) {
 		t.Error("extra --effort= + effort should conflict")
 	}
 }
+
+func TestTaskArgs(t *testing.T) {
+	b := New(agent.Settings{Command: "claude"})
+	got := strings.Join(b.TaskArgs("fix it", "s1", agent.Options{Model: "opus"}), " ")
+	want := "-p --restricted --strict-mcp-config --output-format json --permission-mode acceptEdits --tools Read,Grep,Glob,Edit,Write --disallowedTools Bash,NotebookEdit,WebFetch --resume s1 --model opus -- fix it"
+	if got != want {
+		t.Errorf("task:\n got %q\nwant %q", got, want)
+	}
+	if strings.Contains(got, "bypass") || strings.Contains(got, "dangerously") {
+		t.Errorf("task must never bypass permissions: %q", got)
+	}
+}
+
+func TestChatArgsNeverWrite(t *testing.T) {
+	b := New(agent.Settings{Command: "claude"})
+	args := b.ChatArgs("x", "", agent.Options{})
+	j := strings.Join(args, " ")
+	if strings.Contains(j, "acceptEdits") || strings.Contains(j, "--restricted") {
+		t.Errorf("chat argv must stay read-only: %q", j)
+	}
+	for i, a := range args {
+		if (a == "--tools" || a == "--allowedTools") && (strings.Contains(args[i+1], "Edit") || strings.Contains(args[i+1], "Write")) {
+			t.Errorf("%s must not grant Edit/Write: %q", a, args[i+1])
+		}
+	}
+}

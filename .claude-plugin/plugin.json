@@ -1,7 +1,7 @@
 {
   "name": "peerbridge",
-  "version": "0.6.0",
-  "description": "Local MCP server + plugin for Claude and Codex: let either agent ask the other for a read-only code review or a multi-turn discussion on your machine, bridging sandboxes to your host codex / claude CLIs.",
+  "version": "0.7.0",
+  "description": "Local MCP server + plugin for Claude and Codex: let either agent ask the other for a read-only code review, a multi-turn discussion, or (opt-in) an implementation in a separate git worktree, on your machine with your host codex / claude CLIs.",
   "author": {
     "name": "Jerry Chan",
     "email": "jerrycttdev@gmail.com"

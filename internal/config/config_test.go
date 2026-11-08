@@ -287,3 +287,23 @@ func TestLoadAgentModelEffort(t *testing.T) {
 		t.Errorf("Agent(codex) should have no defaults: %+v", a)
 	}
 }
+
+func TestLoadTaskDefaults(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	c, err := Load(writeTemp(t, "allowed_roots:\n  - "+root+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Tasks.Enabled || c.Tasks.Timeout != 30*time.Minute || c.Tasks.MaxRunning != 2 {
+		t.Errorf("task defaults = %+v", c.Tasks)
+	}
+	if c.StateDir != filepath.Join(root, "state", "peerbridge") {
+		t.Errorf("state dir = %q", c.StateDir)
+	}
+	sd := filepath.Join(root, "s")
+	c, err = Load(writeTemp(t, "allowed_roots:\n  - "+root+"\ntasks:\n  enabled: true\n  timeout: 5m\n  max_running: 1\nstate_dir: '"+sd+"'\n"))
+	if err != nil || !c.Tasks.Enabled || c.Tasks.Timeout != 5*time.Minute || c.Tasks.MaxRunning != 1 || c.StateDir != sd {
+		t.Errorf("explicit tasks = %+v %q %v", c.Tasks, c.StateDir, err)
+	}
+}

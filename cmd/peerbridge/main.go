@@ -43,6 +43,8 @@ func main() {
 		Strs("allowed_roots", cfg.AllowedRoots).
 		Str("codex_command", cfg.Agent("codex").Command).
 		Str("claude_command", cfg.Agent("claude").Command).
+		Bool("tasks_enabled", cfg.Tasks.Enabled).
+		Str("state_dir", cfg.StateDir).
 		Msg("config loaded")
 	if len(cfg.AllowedCommands) > 0 {
 		log.Warn().Strs("allowed_commands", cfg.AllowedCommands).

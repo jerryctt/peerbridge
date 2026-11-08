@@ -83,9 +83,24 @@ type Config struct {
 	// Agents holds per-peer CLI settings keyed by agent name ("codex",
 	// "claude"). Missing entries/fields fall back to DefaultAgents.
 	Agents map[string]AgentConfig `yaml:"agents"`
+	// Tasks configures the write-capable task_start tool (off by default).
+	Tasks TasksConfig `yaml:"tasks"`
+	// StateDir holds task worktrees, patches and the task index. Default:
+	// $XDG_STATE_HOME/peerbridge, else ~/.local/state/peerbridge.
+	StateDir string `yaml:"state_dir"`
 	// AllowedCommands is ignored: it configured run_command, which was
 	// removed in v0.5.0. Still parsed so main can warn about stale configs.
 	AllowedCommands []string `yaml:"allowed_commands"`
+}
+
+// TasksConfig configures task_start, which lets a peer edit files inside a
+// git worktree that peerbridge creates for it.
+type TasksConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Timeout per task turn. Default 30m.
+	Timeout time.Duration `yaml:"timeout"`
+	// MaxRunning caps concurrently running tasks. Default 2.
+	MaxRunning int `yaml:"max_running"`
 }
 
 // AgentConfig configures one peer CLI (see internal/agent.Settings).
@@ -155,6 +170,25 @@ func Load(path string) (*Config, error) {
 	if c.Agents == nil {
 		c.Agents = map[string]AgentConfig{}
 	}
+	if c.Tasks.Timeout == 0 {
+		c.Tasks.Timeout = 30 * time.Minute
+	}
+	if c.Tasks.MaxRunning == 0 {
+		c.Tasks.MaxRunning = 2
+	}
+	if c.Tasks.MaxRunning < 0 {
+		return nil, fmt.Errorf("tasks.max_running must be positive (got %d)", c.Tasks.MaxRunning)
+	}
+	if c.StateDir == "" {
+		d, err := DefaultStateDir()
+		if err != nil {
+			return nil, err
+		}
+		c.StateDir = d
+	}
+	if abs, err := filepath.Abs(c.StateDir); err == nil {
+		c.StateDir = abs
+	}
 	if len(c.AllowedRoots) == 0 {
 		return nil, fmt.Errorf("allowed_roots must not be empty")
 	}
@@ -166,6 +200,18 @@ func Load(path string) (*Config, error) {
 		c.AllowedRoots[i] = abs
 	}
 	return &c, nil
+}
+
+// DefaultStateDir is $XDG_STATE_HOME/peerbridge or ~/.local/state/peerbridge.
+func DefaultStateDir() (string, error) {
+	if x := os.Getenv("XDG_STATE_HOME"); x != "" {
+		return filepath.Join(x, "peerbridge"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("state dir: %w (set state_dir in config.yaml)", err)
+	}
+	return filepath.Join(home, ".local", "state", "peerbridge"), nil
 }
 
 func (c *Config) StreamEnabled() bool {

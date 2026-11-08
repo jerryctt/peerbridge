@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,6 +88,7 @@ func newCfg(t *testing.T) (*config.Config, string) {
 	return &config.Config{
 		AllowedRoots:   []string{root},
 		MaxOutputBytes: 1000,
+		StateDir:       t.TempDir(), // lock files must not land in the package dir
 	}, repo
 }
 
@@ -155,6 +157,16 @@ func gitCalls(t *testing.T, reqs []exec.Request) []string {
 }
 
 const claudeJSON = `{"type":"result","subtype":"success","is_error":false,"result":"CLAUDE_SAYS","session_id":"sess-42"}`
+
+// codexReviewKey is the fakeRunner key for a default codex review.
+const codexReviewKey = `codex exec review --json --ignore-user-config -c sandbox_mode="read-only" --uncommitted`
+
+// codexMsg renders text as `codex exec --json` output with thread id thr-r.
+func codexMsg(text string) string {
+	b, _ := json.Marshal(text)
+	return "{\"type\":\"thread.started\",\"thread_id\":\"thr-r\"}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":" + string(b) + "}}\n"
+}
+
 const codexJSONL = "{\"type\":\"thread.started\",\"thread_id\":\"thr-7\"}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"CODEX_SAYS\"}}\n"
 
 func TestResolveAgent(t *testing.T) {
@@ -178,7 +190,7 @@ func TestResolveAgent(t *testing.T) {
 
 func TestReviewStartCodexNative(t *testing.T) {
 	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted": {Stdout: "VERDICT_OK", Stderr: "NOISE_TRACE", ExitCode: 0},
+		codexReviewKey: {Stdout: codexMsg("VERDICT_OK"), Stderr: "NOISE_TRACE", ExitCode: 0},
 	}})
 	out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{})
 	if isErr {
@@ -205,7 +217,7 @@ func TestReviewStartCodexNative(t *testing.T) {
 
 func TestReviewStartCodexFailureIncludesStderr(t *testing.T) {
 	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted": {Stdout: "partial", Stderr: "BOOM", ExitCode: 2},
+		codexReviewKey: {Stdout: codexMsg("partial"), Stderr: "BOOM", ExitCode: 2},
 	}})
 	out, _ := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{})
 	got, isErr := waitStatus(t, s, jobID(t, out))
@@ -231,7 +243,7 @@ func TestReviewDisablesRepoLocalFilters(t *testing.T) {
 	}
 	var diffEnv string
 	for _, q := range r.all() {
-		if q.Command == "git" && strings.Contains(strings.Join(q.Args, " "), "diff --no-ext-diff") {
+		if q.Command == "git" && strings.Contains(strings.Join(q.Args, " "), "diff --ignore-submodules=dirty --no-ext-diff") {
 			diffEnv = strings.Join(q.Env, "\n")
 		}
 	}
@@ -318,7 +330,7 @@ func TestReviewStartClaudeViaPrompt(t *testing.T) {
 	// claude peer has no shell; "--" ends option parsing after the ref.
 	// base scope diffs the WORKTREE against the merge-base (not base...HEAD),
 	// so uncommitted fixes from the edit→review loop are reviewed too.
-	want := filterProbe + ";merge-base main HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv " + mergeBaseSHA + " --"
+	want := filterProbe + ";merge-base main HEAD;status --ignore-submodules=dirty --short --untracked-files=all;diff --ignore-submodules=dirty --no-ext-diff --no-textconv " + mergeBaseSHA + " --"
 	if calls := gitCalls(t, r.all()); strings.Join(calls, ";") != want {
 		t.Errorf("git calls = %v", calls)
 	}
@@ -352,9 +364,9 @@ func TestReviewStartRejectsOptionLikeRefs(t *testing.T) {
 
 func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 	r := &scriptedRunner{replies: map[string]exec.Result{
-		gitKey("status --short --untracked-files=all"):              {Stdout: "?? new.go\n"},
-		gitKey("diff --no-ext-diff --no-textconv --cached HEAD --"): {Stdout: "+++ b/staged.go\n"},
-		gitKey("diff --no-ext-diff --no-textconv --"):               {Stdout: "+++ b/new.go\n"},
+		gitKey("status --ignore-submodules=dirty --short --untracked-files=all"):              {Stdout: "?? new.go\n"},
+		gitKey("diff --ignore-submodules=dirty --no-ext-diff --no-textconv --cached HEAD --"): {Stdout: "+++ b/staged.go\n"},
+		gitKey("diff --ignore-submodules=dirty --no-ext-diff --no-textconv --"):               {Stdout: "+++ b/new.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
 	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "", agent.Options{})
@@ -367,14 +379,14 @@ func TestReviewStartClaudeUncommittedGitAndFailure(t *testing.T) {
 		t.Errorf("stdin should carry status, staged and unstaged diffs: %q", in)
 	}
 	gitCalls := gitCalls(t, r.all())
-	if want := filterProbe + ";rev-parse --verify --quiet HEAD;status --short --untracked-files=all;diff --no-ext-diff --no-textconv --cached HEAD --;diff --no-ext-diff --no-textconv --"; strings.Join(gitCalls, ";") != want {
+	if want := filterProbe + ";rev-parse --verify --quiet HEAD;status --ignore-submodules=dirty --short --untracked-files=all;diff --ignore-submodules=dirty --no-ext-diff --no-textconv --cached HEAD --;diff --ignore-submodules=dirty --no-ext-diff --no-textconv --"; strings.Join(gitCalls, ";") != want {
 		t.Errorf("git calls = %v", gitCalls)
 	}
 
 	// Unborn HEAD (no commits yet): diff against the empty tree instead.
 	r3 := &scriptedRunner{replies: map[string]exec.Result{
-		gitKey("rev-parse --verify --quiet HEAD"):                                {ExitCode: 1},
-		gitKey("diff --no-ext-diff --no-textconv --cached " + emptyTree + " --"): {Stdout: "+++ b/first.go\n"},
+		gitKey("rev-parse --verify --quiet HEAD"):                                                          {ExitCode: 1},
+		gitKey("diff --ignore-submodules=dirty --no-ext-diff --no-textconv --cached " + emptyTree + " --"): {Stdout: "+++ b/first.go\n"},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s3, repo3 := newSvc(t, r3)
 	out, _ = s3.ReviewStart(context.Background(), "claude", repo3, "", "", "", "", agent.Options{})
@@ -407,7 +419,7 @@ func TestReviewCommitScopeUsesFirstParentDiff(t *testing.T) {
 	if got, isErr := waitStatus(t, s, jobID(t, out)); isErr {
 		t.Fatalf("status: %q", got)
 	}
-	want := filterProbe + ";show --no-ext-diff --no-textconv --diff-merges=first-parent --format=medium abc123 --"
+	want := filterProbe + ";show --ignore-submodules=dirty --no-ext-diff --no-textconv --diff-merges=first-parent --format=medium abc123 --"
 	if calls := gitCalls(t, r.all()); strings.Join(calls, ";") != want {
 		t.Errorf("git calls = %v", calls)
 	}
@@ -415,7 +427,7 @@ func TestReviewCommitScopeUsesFirstParentDiff(t *testing.T) {
 
 func TestReviewWarnsWhenDiffTruncated(t *testing.T) {
 	r := &scriptedRunner{replies: map[string]exec.Result{
-		gitKey("diff --no-ext-diff --no-textconv --"): {Stdout: "+++ huge", StdoutTruncated: true},
+		gitKey("diff --ignore-submodules=dirty --no-ext-diff --no-textconv --"): {Stdout: "+++ huge", StdoutTruncated: true},
 	}, fallback: exec.Result{Stdout: claudeJSON}}
 	s, repo := newSvc(t, r)
 	out, _ := s.ReviewStart(context.Background(), "claude", repo, "uncommitted", "", "", "", agent.Options{})
@@ -596,7 +608,7 @@ func TestJobStatusUnknownJob(t *testing.T) {
 
 func TestStderrOverflowDoesNotMarkCompleteReviewTruncated(t *testing.T) {
 	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted": {Stdout: "FULL_VERDICT", Stderr: "trace...", StderrTruncated: true},
+		codexReviewKey: {Stdout: codexMsg("FULL_VERDICT"), Stderr: "trace...", StderrTruncated: true},
 	}})
 	out, _ := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{})
 	got, _ := waitStatus(t, s, jobID(t, out))
@@ -608,7 +620,7 @@ func TestStderrOverflowDoesNotMarkCompleteReviewTruncated(t *testing.T) {
 func TestFailureShowsStderrTail(t *testing.T) {
 	long := strings.Repeat("trace line\n", 2000) + "REAL_ERROR at the end"
 	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted": {Stderr: long, StderrTruncated: true, ExitCode: 1},
+		codexReviewKey: {Stderr: long, StderrTruncated: true, ExitCode: 1},
 	}})
 	out, _ := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{})
 	got, _ := waitStatus(t, s, jobID(t, out))
@@ -689,5 +701,30 @@ func TestOptionsRejectedBeforeJob(t *testing.T) {
 	// effort alone does not conflict with an extra_args model.
 	if out, isErr := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{Effort: "high"}); isErr {
 		t.Errorf("effort-only: %q", out)
+	}
+}
+
+func TestReviewsReturnConversationID(t *testing.T) {
+	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{codexReviewKey: {Stdout: codexMsg("LGTM")}}})
+	out, _ := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{})
+	got, _ := waitStatus(t, s, jobID(t, out))
+	if !strings.Contains(got, "conversation_id: thr-r") || !strings.Contains(got, "session_id: thr-r") || !strings.Contains(got, "LGTM") {
+		t.Errorf("codex review must return its thread id: %q", got)
+	}
+	s2, repo2 := newSvc(t, &scriptedRunner{fallback: exec.Result{Stdout: claudeJSON}})
+	out, _ = s2.ReviewStart(context.Background(), "claude", repo2, "uncommitted", "", "", "", agent.Options{})
+	if got, _ := waitStatus(t, s2, jobID(t, out)); !strings.Contains(got, "conversation_id: sess-42") {
+		t.Errorf("claude review must return its session id: %q", got)
+	}
+}
+
+func TestFailedCodexReviewKeepsJSONError(t *testing.T) {
+	s, repo := newSvc(t, &fakeRunner{reply: map[string]exec.Result{
+		codexReviewKey: {Stdout: `{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"turn.failed","error":{"message":"usage limit reached"}}` + "\n", ExitCode: 1},
+	}})
+	out, _ := s.ReviewStart(context.Background(), "codex", repo, "uncommitted", "", "", "", agent.Options{})
+	got, _ := waitStatus(t, s, jobID(t, out))
+	if !strings.Contains(got, "usage limit reached") || !strings.Contains(got, "codex exit 1") {
+		t.Errorf("the JSON failure reason must be shown: %q", got)
 	}
 }

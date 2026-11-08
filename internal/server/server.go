@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -21,7 +23,7 @@ import (
 
 // version is reported in the MCP initialize handshake. Keep in sync with
 // .claude-plugin/plugin.json.
-const version = "0.6.0"
+const version = "0.7.0"
 
 // New builds the MCP server. The returned shutdown func cancels any
 // still-running background jobs (killing their CLI process groups) and
@@ -70,6 +72,12 @@ func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCP
 		return agent.Options{Model: req.GetString("model", ""), Effort: req.GetString("effort", "")}
 	}
 
+	// conversation_id continues a conversation. session_id is its legacy
+	// name, kept as an alias: some hosts (Claude Desktop/Cowork) strip an
+	// argument called session_id before it reaches the server.
+	conversationOpt := mcp.WithString("conversation_id", mcp.Description("conversation_id from an earlier job_status result, to continue that conversation. Omit to start a new one."))
+	sessionAliasOpt := mcp.WithString("session_id", mcp.Description("Deprecated alias of conversation_id."))
+
 	reviewHandler := func(forceAgent string) mcpserver.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			folder, err := req.RequireString("folder")
@@ -114,10 +122,10 @@ func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCP
 	), reviewHandler(""))
 
 	s.AddTool(mcp.NewTool("chat_start", withRO(
-		mcp.WithDescription("Send one message to a peer agent ("+agents+") that can read the host project folder (read-only) and get its reply via job_status. Use it for second opinions, design critique or a multi-round discussion: the job_status result includes a session_id; pass it back as session_id to continue the same conversation. Runs in the background; poll job_status."),
+		mcp.WithDescription("Send one message to a peer agent ("+agents+") that can read the host project folder (read-only) and get its reply via job_status. Use it for second opinions, design critique or a multi-round discussion: the job_status result includes a conversation_id; pass it back as conversation_id to continue the same conversation (also works with a conversation_id from review_start or task_start). Runs in the background; poll job_status."),
 		folderOpt, agentOpt, modelOpt, effortOpt,
 		mcp.WithString("message", mcp.Required(), mcp.Description("What to say to the peer. Include the context it needs (what you changed, what you want its opinion on); it only sees the repo and this conversation.")),
-		mcp.WithString("session_id", mcp.Description("session_id from a previous job_status result to continue that conversation. Omit to start a new one.")),
+		conversationOpt, sessionAliasOpt,
 	)...), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		folder, err := req.RequireString("folder")
 		if err != nil {
@@ -127,14 +135,45 @@ func New(cfg *config.Config, r agent.Runner, log zerolog.Logger) (*mcpserver.MCP
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return text(svc.ChatStart(ctx, req.GetString("agent", ""), folder, msg, req.GetString("session_id", ""), opts(req)))
+		cid, err := conversationArg(req)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return text(svc.ChatStart(ctx, req.GetString("agent", ""), folder, msg, cid, opts(req)))
 	})
+
+	if cfg.Tasks.Enabled {
+		s.AddTool(mcp.NewTool("task_start",
+			mcp.WithDescription("Ask a peer agent ("+agents+") to IMPLEMENT a change. Unlike review_start/chat_start it may edit files, but only inside a separate git worktree peerbridge creates for the task: your checkout is never touched and nothing is committed. No network; claude gets file tools only (no shell, so no tests). Runs in the background; poll job_status. The result has the peer's summary, the diff, a patch file and the worktree/branch, for you to review and apply. Pass conversation_id from an earlier task to keep working in its worktree, or from a chat/review to carry that conversation into a new worktree."),
+			mcp.WithReadOnlyHintAnnotation(false),
+			mcp.WithDestructiveHintAnnotation(false),
+			mcp.WithOpenWorldHintAnnotation(false),
+			folderOpt, agentOpt, modelOpt, effortOpt,
+			mcp.WithString("message", mcp.Required(), mcp.Description("What to implement, with the context the peer needs (it sees only the repo and this conversation). Be specific about scope and acceptance criteria.")),
+			conversationOpt, sessionAliasOpt,
+			mcp.WithString("base", mcp.Description("Branch, tag or commit a NEW task's worktree starts from (default HEAD). Your uncommitted changes are not included.")),
+		), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			folder, err := req.RequireString("folder")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			msg, err := req.RequireString("message")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			cid, err := conversationArg(req)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return text(svc.TaskStart(ctx, req.GetString("agent", ""), folder, msg, cid, req.GetString("base", ""), opts(req)))
+		})
+	}
 
 	pollDesc := fmt.Sprintf("Blocks up to ~%s waiting for completion", statusPoll.Round(time.Second))
 	s.AddTool(mcp.NewTool("job_status", withRO(
 		mcp.WithIdempotentHintAnnotation(true),
-		mcp.WithDescription("Get the status/result of a background job started with review_start or chat_start. "+pollDesc+", then returns either the finished result or a 'running' notice; keep calling with the same job_id until it completes. Finished results stay available for ~30 minutes."),
-		mcp.WithString("job_id", mcp.Required(), mcp.Description("The job_id returned by review_start / chat_start")),
+		mcp.WithDescription("Get the status/result of a background job started with review_start, chat_start or task_start. "+pollDesc+", then returns either the finished result or a 'running' notice; keep calling with the same job_id until it completes. Finished results stay available for ~30 minutes."),
+		mcp.WithString("job_id", mcp.Required(), mcp.Description("The job_id returned by review_start / chat_start / task_start")),
 	)...), statusHandler)
 
 	// Deprecated aliases kept so existing installs and skills keep working.
@@ -160,6 +199,7 @@ type Service struct {
 	Log      zerolog.Logger
 	Jobs     *jobStore
 	Backends agent.Registry
+	Tasks    *taskIndex
 }
 
 // NewService wires the codex and claude backends from cfg.
@@ -167,11 +207,25 @@ func NewService(cfg *config.Config, r agent.Runner, log zerolog.Logger) *Service
 	cx, cl := cfg.Agent("codex"), cfg.Agent("claude")
 	return &Service{
 		Cfg: cfg, Runner: r, Log: log, Jobs: newJobStore(),
+		Tasks: &taskIndex{path: filepath.Join(cfg.StateDir, "tasks.json")},
 		Backends: agent.Registry{
 			"codex":  codex.New(agent.Settings{Command: cx.Command, ExtraArgs: cx.ExtraArgs}),
 			"claude": claude.New(agent.Settings{Command: cl.Command, ExtraArgs: cl.ExtraArgs}),
 		},
 	}
+}
+
+// conversationArg reads conversation_id, or its legacy alias session_id; both
+// may be given only if they agree.
+func conversationArg(req mcp.CallToolRequest) (string, error) {
+	c, s := req.GetString("conversation_id", ""), req.GetString("session_id", "")
+	if c != "" && s != "" && c != s {
+		return "", fmt.Errorf("conversation_id %q and session_id %q disagree; pass only conversation_id", c, s)
+	}
+	if c == "" {
+		c = s
+	}
+	return c, nil
 }
 
 // ResolveAgent picks the backend: an explicit name wins; otherwise the peer
@@ -211,7 +265,7 @@ func (s *Service) ReviewStart(ctx context.Context, agentName, folder, scope, bas
 	if err != nil {
 		return err.Error(), true
 	}
-	dir, err := s.Cfg.ResolveAllowedDir(folder)
+	dir, err := s.resolveReadDir(folder)
 	if err != nil {
 		return err.Error(), true
 	}
@@ -249,7 +303,7 @@ func (s *Service) ChatStart(ctx context.Context, agentName, folder, message, ses
 	if err != nil {
 		return err.Error(), true
 	}
-	dir, err := s.Cfg.ResolveAllowedDir(folder)
+	dir, err := s.resolveReadDir(folder)
 	if err != nil {
 		return err.Error(), true
 	}
@@ -263,21 +317,36 @@ func (s *Service) ChatStart(ctx context.Context, agentName, folder, message, ses
 	if err != nil {
 		return err.Error(), true
 	}
-	j, err := s.Jobs.add(dir, b.Name(), agent.KindChat, "")
+	// A continued conversation is locked across peerbridge processes too
+	// (a task in another process may be using it), for the whole turn.
+	release := func() {}
+	if sessionID != "" {
+		u, err := s.lockConversation(b.Name(), sessionID)
+		if err != nil {
+			if errors.Is(err, errLocked) {
+				return fmt.Sprintf("conversation %s already has a running turn (in this or another peerbridge process); wait for it to finish", sessionID), true
+			}
+			return "lock conversation: " + err.Error(), true
+		}
+		release = u
+	}
+	j, err := s.Jobs.addSpec(jobSpec{Folder: dir, Agent: b.Name(), Kind: agent.KindChat, Conversation: sessionID})
 	if err != nil {
+		release()
 		return err.Error(), true
 	}
 	s.Log.Info().Str("tool", "chat_start").Str("job", j.ID).Str("agent", b.Name()).Str("folder", dir).Bool("resume", sessionID != "").Str("model", o.Model).Str("effort", o.Effort).Msg("invocation")
 	go func() {
 		out, isErr := s.runChat(s.Jobs.ctx, b, dir, message, sessionID, o)
+		release() // before finish: a client may start the next turn as soon as it sees completion
 		j.finish(out, isErr)
 	}()
 	cont := "a new conversation"
 	if sessionID != "" {
-		cont = "continuing session " + sessionID
+		cont = "continuing conversation " + sessionID
 	}
 	return fmt.Sprintf(
-		"Chat turn started in the background (%s).\njob_id: %s\nagent: %s\n%sfolder: %s\n\nCall job_status with this job_id to get the reply; it includes the session_id to pass to the next chat_start.",
+		"Chat turn started in the background (%s).\njob_id: %s\nagent: %s\n%sfolder: %s\n\nCall job_status with this job_id to get the reply; it includes the conversation_id to pass to the next chat_start.",
 		cont, j.ID, b.Name(), optionLines(o), dir,
 	), false
 }
@@ -406,9 +475,16 @@ var filterKeyPattern = regexp.MustCompile(`^filter\.(.+)\.(clean|smudge|process|
 // passed as GIT_CONFIG_COUNT/KEY/VALUE env (git >= 2.31), which has the
 // highest precedence of all config sources.
 func (s *Service) filterOverrides(ctx context.Context, dir string) ([]string, error) {
+	return s.filterOverridesIn(ctx, dir, nil)
+}
+
+// filterOverridesIn is filterOverrides with extra leading git options (e.g.
+// --git-dir/--work-tree of a task worktree), so the probe sees exactly the
+// config context the later commands will use.
+func (s *Service) filterOverridesIn(ctx context.Context, dir string, prefix []string) ([]string, error) {
 	// Uncapped: a truncated list would leave a driver live. Fail closed if
 	// the runner reports truncation anyway.
-	args := append(append([]string{}, gitSafety...), "config", "--name-only", "--get-regexp", `^filter\.`)
+	args := append(append(append([]string{}, gitSafety...), prefix...), "config", "--name-only", "--get-regexp", `^filter\.`)
 	res, err := s.Runner.Run(ctx, exec.Request{
 		Command: "git", Args: args, Dir: dir, Env: gitEnv,
 		Timeout: s.Cfg.Timeout, MaxOutputBytes: 0, StreamTo: s.streamTo(),
@@ -466,17 +542,22 @@ func (s *Service) filterOverrides(ctx context.Context, dir string) ([]string, er
 // during an edit → review → edit loop are part of the next review.
 func gitArgs(scope, base, commit string, headUnborn bool, mergeBase string) [][]string {
 	const safe1, safe2 = "--no-ext-diff", "--no-textconv"
+	// Never descend into a submodule's (or, in a task worktree, a peer-made
+	// nested repository's) working tree: git would run there with that
+	// repository's own config, whose filter drivers filterOverrides does not
+	// cover. Gitlink (pointer) changes are still shown.
+	const nosub = "--ignore-submodules=dirty"
 	switch scope {
 	case "base":
 		return [][]string{
-			{"status", "--short", "--untracked-files=all"},
-			{"diff", safe1, safe2, mergeBase, "--"},
+			{"status", nosub, "--short", "--untracked-files=all"},
+			{"diff", nosub, safe1, safe2, mergeBase, "--"},
 		}
 	case "commit":
 		// --diff-merges=first-parent: for a merge commit, plain `show` prints a
 		// combined diff that omits hunks matching either parent (often nothing
 		// at all); the first-parent diff is what the merge brought in.
-		return [][]string{{"show", safe1, safe2, "--diff-merges=first-parent", "--format=medium", commit, "--"}}
+		return [][]string{{"show", nosub, safe1, safe2, "--diff-merges=first-parent", "--format=medium", commit, "--"}}
 	default: // uncommitted
 		head := "HEAD"
 		if headUnborn {
@@ -486,9 +567,9 @@ func gitArgs(scope, base, commit string, headUnborn bool, mergeBase string) [][]
 		// a single `diff HEAD` hides a staged change that was reverted in the
 		// worktree, and the peer has no shell to look at the index itself.
 		return [][]string{
-			{"status", "--short", "--untracked-files=all"},
-			{"diff", safe1, safe2, "--cached", head, "--"},
-			{"diff", safe1, safe2, "--"},
+			{"status", nosub, "--short", "--untracked-files=all"},
+			{"diff", nosub, safe1, safe2, "--cached", head, "--"},
+			{"diff", nosub, safe1, safe2, "--"},
 		}
 	}
 }
@@ -500,21 +581,40 @@ var shaPattern = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
 // truncated reports whether any command's output hit the cap, so the caller
 // can tell the user the review saw an incomplete diff.
 func (s *Service) changeContext(ctx context.Context, dir, scope, base, commit string) (text string, truncated bool, err error) {
-	fenv, err := s.filterOverrides(ctx, dir)
+	// In a task worktree every git command names the recorded git dir and
+	// worktree: git must never discover a repository on its own there (the
+	// peer may have planted one, with config that runs helpers), and the
+	// filter drivers come from the worktree's own config context.
+	var prefix []string
+	var fenv []string
+	task := s.isTaskWorktree(dir)
+	if task {
+		rec, ferr := s.Tasks.byWorktree(dir)
+		if ferr != nil || rec == nil {
+			return "", false, fmt.Errorf("%s is not a recorded task worktree", dir)
+		}
+		prefix = rec.gitArgs()
+		fenv, err = s.worktreeFilterOverrides(ctx, rec)
+	} else {
+		fenv, err = s.filterOverrides(ctx, dir)
+	}
 	if err != nil {
 		return "", false, err
+	}
+	gitc := func(args ...string) (exec.Result, error) {
+		return s.git(ctx, dir, fenv, append(append([]string{}, prefix...), args...)...)
 	}
 	headUnborn := false
 	mergeBase := ""
 	switch scope {
 	case "", "uncommitted":
-		res, err := s.git(ctx, dir, fenv, "rev-parse", "--verify", "--quiet", "HEAD")
+		res, err := gitc("rev-parse", "--verify", "--quiet", "HEAD")
 		if err != nil {
 			return "", false, fmt.Errorf("git rev-parse: %w", err)
 		}
 		headUnborn = res.ExitCode != 0
 	case "base":
-		res, err := s.git(ctx, dir, fenv, "merge-base", base, "HEAD")
+		res, err := gitc("merge-base", base, "HEAD")
 		if err != nil {
 			return "", false, fmt.Errorf("git merge-base: %w", err)
 		}
@@ -528,7 +628,7 @@ func (s *Service) changeContext(ctx context.Context, dir, scope, base, commit st
 	}
 	var out strings.Builder
 	for _, args := range gitArgs(scope, base, commit, headUnborn, mergeBase) {
-		res, err := s.git(ctx, dir, fenv, args...)
+		res, err := gitc(args...)
 		if err != nil {
 			return "", false, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 		}
@@ -561,7 +661,7 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 	if err != nil {
 		return err.Error(), true
 	}
-	maxBytes := s.Cfg.MaxOutputBytes
+	maxBytes := 0 // structured output (JSON/JSONL) either way: parse whole, cap the reply afterwards
 	var stdin string
 	inputTruncated := false
 	if !native {
@@ -578,7 +678,6 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 		// The diff can be far larger than an argv element may be; the CLIs
 		// append piped stdin to the prompt, so it travels that way.
 		stdin = "--- diff ---\n" + diff
-		maxBytes = 0 // structured output: parse whole, cap the reply afterwards
 	}
 	res, err := s.run(ctx, b, dir, args, stdin, maxBytes)
 	if err != nil {
@@ -587,23 +686,33 @@ func (s *Service) runReview(ctx context.Context, b agent.Backend, dir, scope, ba
 	}
 	s.Log.Info().Str("tool", "review").Str("agent", b.Name()).Str("folder", dir).Dur("elapsed", res.Elapsed).Int("exit", res.ExitCode).Msg("invocation")
 
-	text := res.Stdout
-	if !native {
-		if res.ExitCode != 0 || res.TimedOut {
-			return fmt.Sprintf("%s review failed (%s exit %d)\n", agent.Label(b.Name()), b.Name(), res.ExitCode) + diagnostics(b, res, s.Cfg.Timeout), true
-		}
-		reply, _, perr := b.ParseChat(res.Stdout)
-		if perr != nil {
-			return perr.Error() + "\n" + diagnostics(b, res, s.Cfg.Timeout), true
-		}
-		text = s.capReply(reply)
+	if res.StdoutTruncated {
+		return fmt.Sprintf("%s review failed: its output exceeded %d bytes\n", agent.Label(b.Name()), exec.StdoutHardCap) + diagnostics(b, res, s.Cfg.Timeout), true
+	}
+	failed := res.ExitCode != 0 || res.TimedOut
+	if !native && failed {
+		return fmt.Sprintf("%s review failed (%s exit %d)\n", agent.Label(b.Name()), b.Name(), res.ExitCode) + diagnostics(b, res, s.Cfg.Timeout), true
+	}
+	reply, sid, perr := b.ParseChat(res.Stdout)
+	if perr != nil && !failed {
+		return perr.Error() + "\n" + diagnostics(b, res, s.Cfg.Timeout), true
+	}
+	text := s.capReply(reply)
+	if failed && perr != nil {
+		// e.g. codex's turn.failed event: the only explanation may be in the
+		// JSON stream, not on stderr.
+		text = strings.TrimSpace(text + "\n[" + b.Name() + " reported: " + perr.Error() + "]")
 	}
 	label := scope
 	if label == "" {
 		label = "uncommitted"
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "Mode: %s (%s exit %d)\n\n--- %s review ---\n%s\n", label, b.Name(), res.ExitCode, agent.Label(b.Name()), text)
+	fmt.Fprintf(&out, "Mode: %s (%s exit %d)\n", label, b.Name(), res.ExitCode)
+	if sid != "" {
+		fmt.Fprintf(&out, "conversation_id: %s\nsession_id: %s\n", sid, sid)
+	}
+	fmt.Fprintf(&out, "\n--- %s review ---\n%s\n", agent.Label(b.Name()), text)
 	if inputTruncated {
 		fmt.Fprintf(&out, "\n[WARNING: the diff given to %s was truncated at max_output_bytes (%d); files beyond that point were not reviewed. Narrow the scope or raise max_output_bytes.]\n", b.Name(), s.Cfg.MaxOutputBytes)
 	}
@@ -620,21 +729,24 @@ func (s *Service) runChat(ctx context.Context, b agent.Backend, dir, message, se
 	s.Log.Info().Str("tool", "chat").Str("agent", b.Name()).Str("folder", dir).Dur("elapsed", res.Elapsed).Int("exit", res.ExitCode).Msg("invocation")
 
 	reply, sid, perr := b.ParseChat(res.Stdout)
-	if perr != nil || res.ExitCode != 0 || res.TimedOut {
+	if perr != nil || res.ExitCode != 0 || res.TimedOut || res.StdoutTruncated {
 		var out strings.Builder
 		fmt.Fprintf(&out, "%s chat failed (%s exit %d)", agent.Label(b.Name()), b.Name(), res.ExitCode)
+		if res.StdoutTruncated {
+			fmt.Fprintf(&out, ": output exceeded %d bytes", exec.StdoutHardCap)
+		}
 		if perr != nil {
 			fmt.Fprintf(&out, ": %v", perr)
 		}
 		out.WriteString("\n")
 		if sid != "" {
-			fmt.Fprintf(&out, "session_id: %s\n", sid)
+			fmt.Fprintf(&out, "conversation_id: %s\nsession_id: %s\n", sid, sid)
 		}
 		out.WriteString(diagnostics(b, res, s.Cfg.Timeout))
 		return out.String(), true
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "session_id: %s\n\n--- %s reply ---\n%s\n", sid, agent.Label(b.Name()), s.capReply(reply))
+	fmt.Fprintf(&out, "conversation_id: %s\nsession_id: %s\n\n--- %s reply ---\n%s\n", sid, sid, agent.Label(b.Name()), s.capReply(reply))
 	out.WriteString(diagnostics(b, res, s.Cfg.Timeout))
 	return out.String(), false
 }

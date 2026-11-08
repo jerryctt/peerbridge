@@ -80,6 +80,44 @@ func (b *Backend) ChatArgs(message, sessionID string, o agent.Options) []string 
 	return append(args, "--", message)
 }
 
+// taskTools are the tools a task turn may use: file reading plus Edit and
+// Write. Still no shell (claude has no OS sandbox), so a claude task cannot
+// run tests or builds.
+const taskTools = "Read,Grep,Glob,Edit,Write"
+
+// TaskArgs runs one print-mode turn that may edit files.
+//
+//   - --restricted removes every command/code-running tool and WebFetch,
+//     ignores user/project/local settings, confines the file tools to the
+//     working directory (the task's worktree) and refuses bypassPermissions.
+//     Verified on claude 2.1.318: writes next to the worktree, in $HOME and
+//     in /tmp are denied; edits inside succeed.
+//   - --permission-mode acceptEdits approves file edits without a prompt
+//     (nobody can answer one in print mode).
+//   - --strict-mcp-config: no MCP servers, so no route back into peerbridge.
+func (b *Backend) TaskArgs(message, sessionID string, o agent.Options) []string {
+	args := []string{
+		"-p",
+		"--restricted",
+		"--strict-mcp-config",
+		"--output-format", "json",
+		"--permission-mode", "acceptEdits",
+		"--tools", taskTools,
+		"--disallowedTools", "Bash,NotebookEdit,WebFetch",
+	}
+	if sessionID != "" {
+		args = append(args, "--resume", sessionID)
+	}
+	args = append(args, b.s.ExtraArgs...)
+	if o.Model != "" {
+		args = append(args, "--model", o.Model)
+	}
+	if o.Effort != "" {
+		args = append(args, "--effort", o.Effort)
+	}
+	return append(args, "--", message)
+}
+
 // CheckOptions rejects a model/effort when extra_args already passes
 // --model / --effort (separate or "=" form).
 func (b *Backend) CheckOptions(o agent.Options) error {

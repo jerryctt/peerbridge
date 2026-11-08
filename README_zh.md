@@ -5,7 +5,9 @@
 [![CI](https://github.com/jerryctt/peerbridge/actions/workflows/ci.yml/badge.svg)](https://github.com/jerryctt/peerbridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-給 **Claude** 與 **Codex** 共用的本機 MCP server + plugin：在任一邊的 app 裡，都能請*另一家*的 agent 對你的程式碼做唯讀 code review，或進行多輪討論——全部在你自己的機器上、用你自己的 CLI 登入執行。
+給 **Claude** 與 **Codex** 共用的本機 MCP server + plugin：在任一邊的 app 裡，都能請*另一家*的 agent 對你的程式碼做唯讀 code review，或進行多輪討論——全部在你自己的機器上、用你自己的 CLI 登入執行。也可以（預設關閉）讓 peer 在獨立的 git worktree 裡實作變更，完全不碰你的工作目錄。
+
+> **v0.7.0：可選的 `task_start`、改用 `conversation_id`。** `task_start`（以 `tasks: {enabled: true}` 開啟）讓 peer 在 peerbridge 建立的 git worktree 裡改檔，見下方 [Tasks](#task_start選用)。續接對話的參數改名為 `conversation_id`（`session_id` 仍可用，但 Claude Desktop/Cowork 會把這個名稱的參數丟掉，導致從那裡發起的多輪對話其實每次都重開）。review 現在也會回傳 `conversation_id`，可以接著追問，或把發現的問題交給 task 去修。codex review 改用 `codex exec review --json --ignore-user-config` 執行：你 codex 的 `config.toml`（包括 `review_model`）不再套用到 review；請改用 `model` / `effort` 參數或 `agents.codex.model` / `.effort`。
 
 > **v0.5.0：移除 `run_command`。** peerbridge 不再執行任意允許清單中的指令，只會以 server 固定的唯讀參數啟動 peer CLI，所有工具現在都是唯讀。`config.yaml` 裡的 `allowed_commands` 會被忽略（並記一行警告），可以刪掉。
 
@@ -23,6 +25,7 @@ Coding agent 各自活在自己的 app 裡。[Claude](https://claude.ai)（Deskt
 - 看得到主機檔案系統、`codex` 與 `claude` 二進位檔，以及它們既有的登入狀態。
 - GUI 裡的 agent 負責改檔；peerbridge 讓它呼叫 **peer** agent（Claude 裡叫 `codex`、Codex 裡叫 `claude`）來 **review** 變更，或就一個設計**討論**好幾輪——永遠唯讀。
 - 得到緊湊的 **編輯 → peer review → 編輯** 循環，或兩個模型之間的**辯論**，不用離開編輯器。
+- 也可以讓 peer 自己**實作**（`task_start`）：codex 和 claude 甚至可以各在自己的 worktree 裡同時做，再互相 review。
 
 ---
 
@@ -41,7 +44,7 @@ Coding agent 各自活在自己的 app 裡。[Claude](https://claude.ai)（Deskt
 │                                                                   │
 │  peer = 另一家的 agent（依 MCP client 名稱自動推斷）                 │
 │                                                                   │
-│   agent=codex  → codex review …  /  codex exec --sandbox read-only│
+│   agent=codex  → codex exec review … / codex exec --sandbox read-only│
 │   agent=claude → claude -p --strict-mcp-config --permission-mode dontAsk │
 │                         ▼                                         │
 │                 git repo  /Users/…/proj   （peer 只能讀）           │
@@ -53,13 +56,14 @@ Coding agent 各自活在自己的 app 裡。[Claude](https://claude.ai)（Deskt
 ## 功能
 
 - **`review_start` / `job_status`** — 由 peer agent 對 uncommitted 變更、base branch diff 或某個 commit 做唯讀 review：`codex` 跑 `codex review`；`claude` 用 review prompt 跑 `claude -p`。Review 以**背景 job** 執行，因為它常超過 MCP 單次呼叫的時限（Claude Desktop 約 180 秒、Codex 的 `tool_timeout_sec`）；start/status 都很快回，review 本身可以跑到你設定的 `timeout`。
-- **`chat_start` / `job_status`** — 送一則訊息給可以讀 repo 的 peer；結果帶 `session_id`，可續接同一段對話（`claude -p --resume`、`codex exec resume`）。回合由 GUI 裡的 agent 驅動。
+- **`chat_start` / `job_status`** — 送一則訊息給可以讀 repo 的 peer；結果帶 `conversation_id`，可續接同一段對話（`claude -p --resume`、`codex exec resume`）。回合由 GUI 裡的 agent 驅動。review 也會回傳 `conversation_id`，可以接著用 chat 或 task 繼續。
+- **`task_start`（選用）** — peer 在 peerbridge 於 state dir 下建立的 git worktree 裡實作變更；你會拿到它的摘要、diff、完整的 patch 檔與分支，由你決定要不要套用。帶 task 的 `conversation_id` 續接，會繼續在同一個 worktree 裡做。
 - **自動選 peer** — 不帶 `agent` 時，Claude client 會找 codex、Codex client 會找 claude；要指定就傳 `agent`。
-- **唯讀 peer** — claude peer 只拿到讀檔工具（`--tools Read,Grep,Glob`，沒有 shell；review 用的 diff 由 peerbridge 以唯讀 git 算好、經 stdin 餵給 peer），且不載入任何使用者設定與 MCP server（`--setting-sources "" --strict-mcp-config`）；codex peer 跑在 codex 自己的 `--sandbox read-only` 並加 `--ignore-user-config`。兩者都無法遞迴呼叫 peerbridge，你原本的 CLI 登入照常有效。
+- **review 與 chat 唯讀** — claude peer 只拿到讀檔工具（`--tools Read,Grep,Glob`，沒有 shell；review 用的 diff 由 peerbridge 以唯讀 git 算好、經 stdin 餵給 peer），且不載入任何使用者設定與 MCP server（`--setting-sources "" --strict-mcp-config`）；codex peer 跑在 codex 自己的 `--sandbox read-only` 並加 `--ignore-user-config`。兩者都無法遞迴呼叫 peerbridge，你原本的 CLI 登入照常有效。
 - **`codex_review_start` / `codex_review_status`** — 已棄用的別名，等同 `review_start(agent=codex)` / `job_status`；既有安裝照常可用。
 - **嚴格安全** — 根目錄限制、符號連結解析後的路徑檢查、peer 的 argv 固定且唯讀、不提供任意指令執行、絕不使用 shell。
 - **每次呼叫可指定 model 與 effort** — `review_start` / `chat_start` 可選帶 `model` 與 `effort`（`low`…`max`），也能在設定檔給各 agent 預設值。
-- **可設定** — 允許的根目錄、timeout、輸出上限、各 agent 的指令路徑、額外旗標、預設 model 與 effort。
+- **可設定** — 允許的根目錄、timeout、輸出上限、各 agent 的指令路徑、額外旗標、預設 model 與 effort、task 設定。
 - **審計日誌** — 每次工具呼叫都透過 zerolog 寫到 stderr。
 
 ---
@@ -117,7 +121,7 @@ make build          # 產生 ./peerbridge
 ```
 然後從清單安裝 `peerbridge` plugin。
 
-透過 marketplace 安裝會一次裝好 MCP server（由內附 launcher 自動啟動）以及 `peer-review`、`peer-chat` 兩個 skill。
+透過 marketplace 安裝會一次裝好 MCP server（由內附 launcher 自動啟動）以及 `peer-review`、`peer-chat`、`peer-task` 三個 skill。
 
 **前置：建立設定檔。** server 預設讀 `~/.config/peerbridge/config.yaml`。啟動 Claude Desktop/Code 前先從 `examples/config.example.yaml` 建立：
 
@@ -159,7 +163,7 @@ cd peerbridge
 scripts/install-codex.sh            # 或：scripts/install-codex.sh --local ./peerbridge
 ```
 
-這個腳本會下載並驗證 release 二進位檔（連結到 `~/.local/bin/peerbridge`）、在 `~/.codex/config.toml` 寫入 `[mcp_servers.peerbridge]` 區塊（含 `tool_timeout_sec = 120`）、把 `peer-review` 與 `peer-chat` skill 裝進 `~/.agents/skills/`，並在不存在時建立 `~/.config/peerbridge/config.yaml`。改好 `allowed_roots` 後重啟 Codex app（CLI、macOS app、IDE extension 共用這份設定）。在 Codex 裡說「peer review my changes」或「ask claude what it thinks about this design」即可。
+這個腳本會下載並驗證 release 二進位檔（連結到 `~/.local/bin/peerbridge`）、在 `~/.codex/config.toml` 寫入 `[mcp_servers.peerbridge]` 區塊（含 `tool_timeout_sec = 120`）、把 `peer-review`、`peer-chat`、`peer-task` skill 裝進 `~/.agents/skills/`，並在不存在時建立 `~/.config/peerbridge/config.yaml`。改好 `allowed_roots` 後重啟 Codex app（CLI、macOS app、IDE extension 共用這份設定）。在 Codex 裡說「peer review my changes」或「ask claude what it thinks about this design」即可。
 
 手動等效設定：
 
@@ -225,6 +229,16 @@ agents:
 
 # 舊欄位，仍然有效，會附加到 agents.codex.extra_args：
 # codex_extra_args: ["-c", "model=o3"]
+
+# task_start：讓 peer 在獨立的 git worktree 裡改檔。預設關閉。
+# tasks:
+#   enabled: true
+#   timeout: 30m        # 每一輪 task 的時限
+#   max_running: 2      # 同時執行的 task 上限
+
+# task 的 worktree、patch 與索引存放處。
+# 預設：$XDG_STATE_HOME/peerbridge，否則 ~/.local/state/peerbridge
+# state_dir: /Users/yourname/.local/state/peerbridge
 ```
 
 > **注意：** 設定檔**只在 server 啟動時讀一次**。改完 `config.yaml` 後要完全重啟 Claude Desktop 或 Codex app（它們會重新啟動 server）才會生效。啟動時會記錄實際使用的值（找 `config loaded` 那行——顯示設定檔路徑、timeout 與各 agent 的指令）。
@@ -257,7 +271,8 @@ agents:
 | 工具 | 用途 |
 |---|---|
 | `review_start(folder, agent?, scope?, base?, commit?, prompt?)` | 由 peer agent 開始唯讀 review；回傳 `job_id`。 |
-| `chat_start(folder, message, agent?, session_id?)` | 送一則訊息給 peer；回傳 `job_id`。帶上前一次回覆的 `session_id` 即可續接同一段對話。 |
+| `chat_start(folder, message, agent?, model?, effort?, conversation_id?)` | 送一則訊息給 peer；回傳 `job_id`。帶上先前結果的 `conversation_id` 即可續接那段對話。 |
+| `task_start(folder, message, agent?, model?, effort?, conversation_id?, base?)` | **選用。** peer 在獨立的 git worktree 裡實作變更；回傳 `job_id`。 |
 | `job_status(job_id)` | long-poll（≤50 秒）取得 job 結果。 |
 | `codex_review_start`、`codex_review_status` | 已棄用，等同 `review_start(agent=codex)` / `job_status`。 |
 
@@ -276,7 +291,7 @@ agents:
 | `model` | string | 否 | peer 使用的 model（見下方「Model 與 effort」） |
 | `effort` | string | 否 | `low`、`medium`、`high`、`xhigh` 或 `max`（見下方「Model 與 effort」） |
 
-`agent=codex` 執行 `codex review`（原生，自行計算 diff）。`agent=claude` 以 review prompt 執行 `claude -p`，要求它用唯讀 git 指令檢視變更。
+`agent=codex` 在唯讀沙箱、不載入你的 codex 設定下執行 `codex exec review --json`（原生，由 codex 自行計算 diff）。`agent=claude` 以 review prompt 執行 `claude -p`；diff 由 peerbridge 以加固過的唯讀 git 算好、經 stdin 傳入。完成的結果會帶 `conversation_id` 供後續追問（`chat_start` / `task_start`）；每次 `review_start` 本身一律重新 review。
 
 **回傳：**
 
@@ -295,7 +310,8 @@ folder: /Users/you/proj
 | `folder` | string | 是 | peer 可以讀的主機絕對路徑 |
 | `message` | string | 是 | 要說的話。請附上 peer 需要的脈絡——它只看得到 repo 與這段對話。 |
 | `agent` | string | 否 | `codex` 或 `claude`；省略則自動選 peer |
-| `session_id` | string | 否 | 前一次 `job_status` 回傳的 `session_id`，用來續接該對話 |
+| `conversation_id` | string | 否 | 先前 `job_status` 結果（chat、review 或 task）裡的 `conversation_id`，用來續接那段對話 |
+| `session_id` | string | 否 | `conversation_id` 的舊名稱。Claude Desktop/Cowork 會丟掉這個名稱的參數，請改用 `conversation_id` |
 | `model` | string | 否 | 這一輪 peer 使用的 model |
 | `effort` | string | 否 | 這一輪的推理強度：`low`、`medium`、`high`、`xhigh` 或 `max` |
 
@@ -304,10 +320,36 @@ folder: /Users/you/proj
 `model` 與 `effort` 用來指定單次呼叫時 peer 的 model 與推理強度，例如 `review_start(folder=…, agent="claude", model="opus", effort="high")`。
 
 - **claude** 會收到 `--model <model> --effort <effort>`；`model` 可以是別名（`opus`、`sonnet`…）或完整 model id。
-- **codex** 會收到 `-c model="<model>"`（review 時另加 `-c review_model="<model>"`，避免你 codex 設定裡的 `review_model` 蓋過去）與 `-c model_reasoning_effort="<effort>"`。
+- **codex** 會收到 `-c model="<model>"`（review 時另加 `-c review_model="<model>"`）與 `-c model_reasoning_effort="<effort>"`。
 - 優先順序：呼叫時帶的值 → `config.yaml` 的 `agents.<name>.model` / `.effort` → CLI 自己的預設。每次呼叫都重新決定；續接對話時沒帶的值不會重送，由 CLI 自行決定。
 - 某個 model 支援哪些 effort 由各家 CLI 決定；不支援的組合會直接回傳 CLI 的錯誤。
 - 若 `extra_args` 已經指定 model 或 effort（例如 `["-m", "o3"]`），呼叫時再帶會被拒絕，不去猜哪個旗標優先；請改寫到設定檔的 `model:` / `effort:`。
+
+### `task_start`（選用）
+
+讓 peer **改檔**——但只能在 peerbridge 為這個 task 建立的 git worktree 裡。你的工作目錄完全不會被動到，也不會有任何 commit。除非 `config.yaml` 有 `tasks: {enabled: true}`，否則這個工具不啟用，連工具清單都不會出現。
+
+| 參數 | 型別 | 必填 | 說明 |
+|---|---|---|---|
+| `folder` | string | 是 | git repo 內的主機絕對路徑（必須在 `allowed_roots` 之下） |
+| `message` | string | 是 | 要實作什麼，請寫清楚範圍與驗收條件 |
+| `agent` | string | 否 | `codex` 或 `claude`；省略則自動選 peer |
+| `model`、`effort` | string | 否 | 同 chat（見上方「Model 與 effort」） |
+| `conversation_id` | string | 否 | 來自先前的 **task**：在那個 task 的 worktree 裡繼續。來自 **chat 或 review**：在新的 worktree 裡續接那段對話 |
+| `base` | string | 否 | 新 task 的起點分支、tag 或 commit（預設 `HEAD`）。你未 commit 的變更不會帶進去 |
+
+運作方式：
+
+1. peerbridge 在 `<state_dir>/worktrees/` 下建立 `peerbridge/task-<id>` worktree，停用 hook，並讓所有 filter driver 失效——包括只有在 worktree 自己的設定情境下才會生效的 driver（`includeIf onbranch:` / `gitdir:`）。
+2. peer 以該 worktree 為工作目錄執行：
+   - **codex** — `codex exec --sandbox workspace-write`，關閉網路、排除 `/tmp`，`$TMPDIR` 是每個 job 專屬的目錄。它可以在沙箱內跑指令（測試、建置）。
+   - **claude** — `claude -p --restricted --permission-mode acceptEdits --tools Read,Grep,Glob,Edit,Write`：檔案工具只限 worktree，**沒有 shell**，所以不能跑測試。
+3. peerbridge 把 worktree 裡的變更全部 stage（`git add -A`，使用建立時記下的 git dir，從不信任 worktree 自己的 `.git` 檔），並把完整的二進位 patch 存到 `<state_dir>/patches/`。
+4. 結果包含 peer 的摘要、diffstat、diff、patch 路徑、worktree 與分支、`conversation_id`，以及可直接複製的套用指令（`git apply --index <patch>`，或在 worktree 裡 commit 後 merge 分支）與清理指令（`git worktree remove`）。即使 peer 失敗或逾時也會回傳，部分完成的工作不會遺失。每一輪都有自己的 patch 檔。如果 patch 無法涵蓋所有變更（stage 失敗、超過輸出上限，或變更涉及 submodule／巢狀 repo——patch 裝不下它們的內容），結果會標示 **INCOMPLETE**，並且不提供套用與清理指令：請直接從 worktree 取回。
+
+已在 macOS 驗證（codex 0.166、claude 2.1.318）：寫到 worktree 外面、`$HOME`，以及（claude 的話）`/tmp` 都會被拒；peer 無法 `git commit`；codex 沒有網路。這些是**寫入**限制：跟 review 一樣，task 的 peer 仍然*讀得到* repo 以外的檔案。
+
+並行規則：同一段對話同時只能有一輪在跑（chat、review 後的追問與 task 共用）；同一個 worktree 同時只能有一個 task——以檔案鎖實作，所以跨 peerbridge 程序也有效（例如 Claude Desktop 和 Codex 各跑一個）；每個程序的 task 總數不超過 `tasks.max_running`。要 review task 的成果，可以 `review_start(folder=<worktree>)`（結果裡印出的 worktree 根目錄）：雖然 worktree 不在 `allowed_roots` 內，但只要它是有紀錄的 task worktree、所屬 repo 仍在允許範圍內，且 `.git` 仍指向 peerbridge 建立時的位置，就會被接受。同一個 repo 的不同 worktree 可以同時跑——例如 codex 和 claude 各自實作同一個需求，再互相 review 對方的分支。
 
 ### `job_status`
 
@@ -315,7 +357,7 @@ folder: /Users/you/proj
 
 | 參數 | 型別 | 必填 | 說明 |
 |---|---|---|---|
-| `job_id` | string | 是 | `review_start` / `chat_start` 回傳的 id |
+| `job_id` | string | 是 | `review_start` / `chat_start` / `task_start` 回傳的 id |
 
 **回傳（review 完成）：**
 
@@ -323,6 +365,8 @@ folder: /Users/you/proj
 status: completed (job 3fa4c19e02d1, agent codex, kind review, elapsed 4m12s)
 
 Mode: uncommitted (codex exit 0)
+conversation_id: 01a1baf7-…
+session_id: 01a1baf7-…
 
 --- Codex review ---
 … 發現的問題 …
@@ -333,6 +377,7 @@ Mode: uncommitted (codex exit 0)
 ```
 status: completed (job 9b1d…, agent claude, kind chat, elapsed 1m05s)
 
+conversation_id: 6c2f0a4e-…
 session_id: 6c2f0a4e-…
 
 --- Claude reply ---
@@ -350,8 +395,8 @@ Still in progress. Call job_status again with the same job_id.
 
 ```
 chat_start(folder="/Users/you/proj", message="Critique the retry design in the uncommitted diff.")
-job_status(job_id="…")   → session_id: abc…  --- Claude reply --- …
-chat_start(folder="/Users/you/proj", session_id="abc…", message="Point 2 only applies to POST; does that change your view?")
+job_status(job_id="…")   → conversation_id: abc…  --- Claude reply --- …
+chat_start(folder="/Users/you/proj", conversation_id="abc…", message="Point 2 only applies to POST; does that change your view?")
 ```
 
 ---
@@ -361,19 +406,20 @@ chat_start(folder="/Users/you/proj", session_id="abc…", message="Point 2 only 
 每個 host 預設都會在執行 MCP 工具前詢問；一次 review 是一個 `review_start` 加上好幾次 `job_status` 輪詢，所以預設下大約每 50 秒就會被問一次。有三個地方可以調：
 
 - **減少輪詢次數。** `config.yaml` 的 `status_poll` 是 `job_status` 回「running」前最多等多久。範例設 `100s`（配合安裝腳本寫入的 `tool_timeout_sec = 120` 與 Claude Desktop 約 180 秒的上限都安全），內建預設 `50s`。一定要低於 client 的單次呼叫時限。
-- **Codex。** 安裝腳本會在 `[mcp_servers.peerbridge]` 區塊寫入 `default_tools_approval_mode = "writes"`：Codex 只會對*沒有*標為唯讀的工具詢問。`review_start`、`chat_start`、`job_status` 都帶 MCP 的 `readOnlyHint` 註解（peer 從不改任何東西），所以不會被問。peerbridge 的工具全都是唯讀，所以 Codex 完全不會問；想每次都確認就改成 `"prompt"`。
-- **Claude。** Claude Desktop / Cowork 在每個工具第一次詢問時選 **Always allow**（會以工具為單位記住）。Claude Code 則在 `~/.claude/settings.json` 加權限規則：`{"permissions": {"allow": ["mcp__peerbridge__*"]}}`——若是透過 marketplace plugin 安裝，server 名稱是 `plugin_peerbridge_peerbridge`，要寫 `"mcp__plugin_peerbridge_peerbridge__*"`。Claude Code 目前不會依 `readOnlyHint` 自動放行 MCP 工具，所以要明確加規則。萬用字元是安全的：peerbridge 的工具全都是唯讀。
+- **Codex。** 安裝腳本會在 `[mcp_servers.peerbridge]` 區塊寫入 `default_tools_approval_mode = "writes"`：Codex 只會對*沒有*標為唯讀的工具詢問。`review_start`、`chat_start`、`job_status` 都帶 MCP 的 `readOnlyHint` 註解（peer 從不改任何東西），所以不會被問。`task_start`（啟用時）不是唯讀，所以每個 task 前 Codex 都會詢問；想每次呼叫都確認就改成 `"prompt"`。
+- **Claude。** Claude Desktop / Cowork 在每個工具第一次詢問時選 **Always allow**（會以工具為單位記住）。Claude Code 則在 `~/.claude/settings.json` 加權限規則：`{"permissions": {"allow": ["mcp__peerbridge__*"]}}`——若是透過 marketplace plugin 安裝，server 名稱是 `plugin_peerbridge_peerbridge`，要寫 `"mcp__plugin_peerbridge_peerbridge__*"`。Claude Code 目前不會依 `readOnlyHint` 自動放行 MCP 工具，所以要明確加規則。啟用 task 時，萬用字元也會放行 `task_start`；想讓 task 仍然詢問，就改成只列唯讀工具：`"mcp__plugin_peerbridge_peerbridge__review_start"`、`…__chat_start`、`…__job_status`。
 
 ## Skills
 
-`skills/` 下附兩個 skill，採用 Claude（plugin）與 Codex（`~/.agents/skills/`）共用的 `SKILL.md` 格式：
+`skills/` 下附三個 skill，採用 Claude（plugin）與 Codex（`~/.agents/skills/`）共用的 `SKILL.md` 格式：
 
 - **`peer-review`** — 以 `review_start` / `job_status` 跑「編輯 → peer review → 編輯」循環；agent 中立，兩邊都能用，可由 codex 或 claude 來 review。
-- **`peer-chat`** — 以 `chat_start` / `job_status` 進行多輪討論，保留 `session_id`。
+- **`peer-chat`** — 以 `chat_start` / `job_status` 進行多輪討論，保留 `conversation_id`。
+- **`peer-task`** — （啟用 task 時）用 `task_start` 把實作交給 peer，review 結果後套用或繼續修改。
 
 原本只給 Claude 用的 `codex-loop` skill 已移除，由 `peer-review` 取代（說「review my changes with codex」即可指定由 codex review）。
 
-Claude marketplace plugin 與 `scripts/install-codex.sh` 會自動安裝它們。用類似「peer review my changes」、「ask claude/codex what it thinks about this」、「review my changes with codex」的話即可觸發。
+Claude marketplace plugin 與 `scripts/install-codex.sh` 會自動安裝它們。用類似「peer review my changes」、「ask claude/codex what it thinks about this」、「review my changes with codex」、「have codex implement this」的話即可觸發。
 
 ---
 
@@ -387,7 +433,9 @@ Claude marketplace plugin 與 `scripts/install-codex.sh` 會自動安裝它們�
 4. **輪詢** `job_status` 直到 `status: completed`。每次最多阻塞約 50 秒。
 5. **迭代。** 修掉問題、重新 review，直到乾淨。
 
-要**討論**，用 `chat_start` 送一則聚焦的訊息，從 `job_status` 讀回覆，再帶回傳的 `session_id` 繼續。
+要**討論**，用 `chat_start` 送一則聚焦的訊息，從 `job_status` 讀回覆，再帶回傳的 `conversation_id` 繼續。
+
+要**委派實作**（已啟用 task）：`task_start(folder=…, message="implement X")`，review 回傳的 diff（或對 task 的 worktree 跑 `review_start`），再套用 patch，或用 `task_start(conversation_id=…, message="also handle Y")` 繼續。想比較做法，就分別用 `agent="codex"` 和 `agent="claude"` 各開一個 task。
 
 ---
 
@@ -395,8 +443,9 @@ Claude marketplace plugin 與 `scripts/install-codex.sh` 會自動安裝它們�
 
 - **根目錄限制。** 每個路徑參數都解析（含符號連結）後對照 `allowed_roots`。
 - **無 shell。** 指令以 argv 陣列經 `os/exec` 執行，沒有 `sh -c`、沒有 glob 展開、沒有 shell injection。
-- **唯讀 peer。** peer 的 argv 由 server 固定。codex 用 `codex review` / `codex exec --sandbox read-only --ignore-user-config`（OS 層沙箱）。claude 沒有沙箱，所以完全不給 shell：`-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`。claude review 的 `git status`/`git diff`/`git show` 由 peerbridge 自己執行並經 stdin 餵給 peer——唯讀且加固：ref 會先驗證（不可能像選項）、`--no-ext-diff --no-textconv`、`core.fsmonitor=false`、`core.hooksPath=/dev/null`、忽略 global/system git config（`GIT_CONFIG_GLOBAL=/dev/null` 等）並設 `GIT_OPTIONAL_LOCKS=0`，所以不會跑任何 diff helper、filter 或 hook，也不會寫入任何東西。只有 `agents.<name>.command`、`extra_args`，以及經過驗證的 `model` / `effort` 來自設定或呼叫端（model 只允許英數與 `. _ : / -`，effort 限定固定清單）。
+- **review 與 chat 唯讀。** peer 的 argv 由 server 固定。codex 用 `codex exec review` / `codex exec`，加 `--ignore-user-config` 與唯讀沙箱（OS 層）。claude 沒有沙箱，所以完全不給 shell：`-p --strict-mcp-config --setting-sources "" --permission-mode dontAsk --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --disallowedTools Edit,Write,NotebookEdit,Bash`。claude review 的 `git status`/`git diff`/`git show` 由 peerbridge 自己執行並經 stdin 餵給 peer——唯讀且加固：ref 會先驗證（不可能像選項）、`--no-ext-diff --no-textconv`、`core.fsmonitor=false`、`core.hooksPath=/dev/null`、忽略 global/system git config（`GIT_CONFIG_GLOBAL=/dev/null` 等）並設 `GIT_OPTIONAL_LOCKS=0`，以及 `--ignore-submodules=dirty`（git 不會進到 submodule 裡執行，因為 submodule 自己的設定可能定義 filter；submodule 指標的變更仍會顯示，但 submodule 內未 commit 的修改不會），所以不會跑任何 diff helper、filter 或 hook，也不會寫入任何東西。只有 `agents.<name>.command`、`extra_args`，以及經過驗證的 `model` / `effort` 來自設定或呼叫端（model 只允許英數與 `. _ : / -`，effort 限定固定清單）。
 - **不繼承權限、不遞迴。** `--setting-sources ""` 讓使用者自己的 Claude 權限規則與 hook 不會進到 peer（`--allowedTools` 是疊加在設定之上的，這樣它才是完整清單）；`--strict-mcp-config`（claude）與 `--ignore-user-config`（codex）讓 peer 啟動時沒有使用者的任何 MCP server，所以不會載入 peerbridge 自己。刻意不用 `--bare`：它會關閉 OAuth/keychain 認證，訂閱登入會失效。`-c mcp_servers={}` 也被否決：config 覆寫是合併而非取代。
+- **task 需明確開啟且受限。** `task_start` 預設關閉。task 的 peer 只能寫入 `state_dir` 下由 server 建立的 worktree（codex：`workspace-write` 沙箱、關閉網路、專屬 `$TMPDIR`；claude：`--restricted`，只有檔案工具、沒有 shell），無法 commit，不載入任何 MCP server 或使用者設定；在你套用 patch 之前，它做的任何事都不會進到你的工作目錄。建立 worktree 時停用 hook 與 filter driver，peerbridge 在 worktree 裡執行的 git 一律使用建立時記下的 git dir，從不使用（peer 可改寫的）`.git` 檔。限制的是寫入，repo 以外的讀取不受限。
 - **不提供任意指令執行。** 沒有任何工具能跑任意指令：peerbridge 只會啟動帶上述固定 argv 的 peer CLI，以及它自己加固過的唯讀 git。（`run_command` 已在 v0.5.0 移除：即使有允許清單，`claude`/`codex`/`git` 都能靠參數繞過唯讀設計。）
 - **原生程序，非 Docker。** 容器化會失去主機 CLI 與登入狀態的存取。
 - **僅主機路徑。** 以 `/sessions/` 開頭的路徑一律拒絕並給出提示。

@@ -34,3 +34,15 @@ agents:
     # effort: high
 # legacy, still honoured and appended to agents.codex.extra_args:
 # codex_extra_args: ["-c", "model=o3"]
+
+# task_start: let a peer EDIT files, only inside a separate git worktree that
+# peerbridge creates under state_dir (your checkout is never touched, nothing
+# is committed). Off by default; when off the tool is not listed at all.
+# tasks:
+#   enabled: true
+#   timeout: 30m        # per task turn
+#   max_running: 2      # concurrently running tasks
+
+# Task worktrees, patches and the task index. Default:
+# $XDG_STATE_HOME/peerbridge, else ~/.local/state/peerbridge
+# state_dir: /Users/you/.local/state/peerbridge

@@ -17,8 +17,9 @@ type Request struct {
 	Dir     string
 	Stdin   string
 	Timeout time.Duration
-	// MaxOutputBytes caps captured stdout (the head is kept); 0 means
-	// unlimited. Stderr is capped separately: see StderrCap.
+	// MaxOutputBytes caps captured stdout (the head is kept); 0 means "no
+	// caller cap", which still stops at StdoutHardCap so a runaway CLI cannot
+	// exhaust memory. Stderr is capped separately: see StderrCap.
 	MaxOutputBytes int
 	// StreamTo, if non-nil, means stdout and stderr are also written here live,
 	// in addition to being captured in the Result.
@@ -33,6 +34,31 @@ type Request struct {
 // independent of MaxOutputBytes, which callers set to 0 when stdout is a
 // structured stream that must be parsed whole.
 const StderrCap = 64 << 10
+
+// StdoutHardCap bounds stdout when the caller sets no MaxOutputBytes (the
+// structured JSON/JSONL streams that are parsed whole). Exceeding it sets
+// StdoutTruncated, which those callers treat as an error.
+const StdoutHardCap = 32 << 20
+
+// headBuffer keeps the first max bytes written and discards the rest (still
+// consuming them, so the child never blocks on a full pipe).
+type headBuffer struct {
+	max       int
+	buf       bytes.Buffer
+	truncated bool
+}
+
+func (h *headBuffer) Write(p []byte) (int, error) {
+	if room := h.max - h.buf.Len(); room < len(p) {
+		if room > 0 {
+			h.buf.Write(p[:room])
+		}
+		h.truncated = true
+		return len(p), nil
+	}
+	h.buf.Write(p)
+	return len(p), nil
+}
 
 type Result struct {
 	Stdout string
@@ -89,7 +115,11 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 	setSysProcAttr(cmd)
 
-	var out bytes.Buffer
+	limit := req.MaxOutputBytes
+	if limit <= 0 {
+		limit = StdoutHardCap
+	}
+	out := headBuffer{max: limit}
 	errb := tailBuffer{max: StderrCap}
 	if req.StreamTo != nil {
 		cmd.Stdout = io.MultiWriter(&out, req.StreamTo)
@@ -124,14 +154,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	res.Elapsed = time.Since(start)
 	res.ExitCode = cmd.ProcessState.ExitCode()
 
-	res.Stdout, res.StdoutTruncated = truncate(out.String(), req.MaxOutputBytes)
+	res.Stdout, res.StdoutTruncated = out.buf.String(), out.truncated
 	res.Stderr, res.StderrTruncated = errb.result()
 	return res, nil
-}
-
-func truncate(s string, max int) (string, bool) {
-	if max > 0 && len(s) > max {
-		return s[:max], true
-	}
-	return s, false
 }

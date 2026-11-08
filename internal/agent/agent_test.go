@@ -86,6 +86,7 @@ func (s stub) ReviewArgs(_, _, _, _ string, _ Options) ([]string, bool, error) {
 	return nil, false, nil
 }
 func (s stub) ChatArgs(_, _ string, _ Options) []string   { return nil }
+func (s stub) TaskArgs(_, _ string, _ Options) []string   { return nil }
 func (s stub) CheckOptions(Options) error                 { return nil }
 func (s stub) ParseChat(_ string) (string, string, error) { return "", "", nil }
 

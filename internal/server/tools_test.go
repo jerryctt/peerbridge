@@ -99,7 +99,7 @@ func TestRegisteredTools(t *testing.T) {
 func TestAliasToolRunsCodexReview(t *testing.T) {
 	cfg, repo := newCfg(t)
 	s, shutdown := New(cfg, &fakeRunner{reply: map[string]exec.Result{
-		"codex review --uncommitted": {Stdout: "ALIAS_OK"},
+		codexReviewKey: {Stdout: codexMsg("ALIAS_OK")},
 	}}, zerolog.Nop())
 	defer shutdown()
 
@@ -156,5 +156,56 @@ func TestReadOnlyAnnotations(t *testing.T) {
 		if tl.Name == "job_status" && !strings.Contains(tl.Description, "~1m40s") {
 			t.Errorf("job_status description should reflect status_poll: %q", tl.Description)
 		}
+	}
+}
+
+func TestTaskToolOnlyWhenEnabled(t *testing.T) {
+	cfg, _ := newCfg(t)
+	cfg.StateDir = t.TempDir()
+	cfg.Tasks.Enabled = true
+	s, shutdown := New(cfg, &fakeRunner{}, zerolog.Nop())
+	defer shutdown()
+	var list mcp.ListToolsResult
+	rpc(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, &list)
+	var task *mcp.Tool
+	for i, tl := range list.Tools {
+		if tl.Name == "task_start" {
+			task = &list.Tools[i]
+		}
+		if tl.Name == "chat_start" {
+			for _, p := range []string{"conversation_id", "session_id"} {
+				if _, ok := tl.InputSchema.Properties[p]; !ok {
+					t.Errorf("chat_start must take %s", p)
+				}
+			}
+		}
+	}
+	if task == nil {
+		t.Fatal("task_start missing with tasks.enabled")
+	}
+	if ro := task.Annotations.ReadOnlyHint; ro == nil || *ro {
+		t.Error("task_start must not be marked read-only (it edits files)")
+	}
+	for _, p := range []string{"folder", "message", "agent", "model", "effort", "conversation_id", "base"} {
+		if _, ok := task.InputSchema.Properties[p]; !ok {
+			t.Errorf("task_start must take %s", p)
+		}
+	}
+}
+
+func TestConversationAliasConflict(t *testing.T) {
+	cfg, repo := newCfg(t)
+	s, shutdown := New(cfg, &recordingRunner{reply: exec.Result{Stdout: codexJSONL}}, zerolog.Nop())
+	defer shutdown()
+	var res mcp.CallToolResult
+	rpc(t, s, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"chat_start","arguments":{"folder":`+strconv.Quote(repo)+`,"agent":"codex","message":"hi","conversation_id":"a","session_id":"b"}}}`, &res)
+	if !res.IsError || !strings.Contains(toolText(res), "disagree") {
+		t.Errorf("conflicting ids must be rejected: %q", toolText(res))
+	}
+	var res2 mcp.CallToolResult
+	rpc(t, s, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"chat_start","arguments":{"folder":`+strconv.Quote(repo)+`,"agent":"codex","message":"hi","conversation_id":"thr-7"}}}`, &res2)
+	res = res2
+	if res.IsError || !strings.Contains(toolText(res), "continuing conversation thr-7") {
+		t.Errorf("conversation_id must continue: %q", toolText(res))
 	}
 }

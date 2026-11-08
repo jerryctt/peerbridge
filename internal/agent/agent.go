@@ -19,6 +19,7 @@ type Kind string
 const (
 	KindReview Kind = "review"
 	KindChat   Kind = "chat"
+	KindTask   Kind = "task"
 )
 
 // Runner executes a host command. Satisfied by exec.Runner and by test fakes.
@@ -72,7 +73,8 @@ func ValidateOptions(o Options) error {
 }
 
 // Backend builds argv for, and parses output of, one vendor's CLI.
-// Implementations must never emit flags that allow the CLI to write files.
+// ReviewArgs and ChatArgs must never emit flags that allow the CLI to write
+// files; only TaskArgs may.
 type Backend interface {
 	Name() string
 	Command() string
@@ -84,6 +86,12 @@ type Backend interface {
 	// ChatArgs returns argv for one conversational turn. sessionID == ""
 	// starts a new session; otherwise the turn continues that session.
 	ChatArgs(message, sessionID string, o Options) []string
+	// TaskArgs returns argv for one turn that MAY edit files. It is the only
+	// write-enabling method, used solely by task_start inside a server-created
+	// git worktree (the process's working directory). Writes must stay
+	// confined to that directory (plus a per-job temp dir for codex); no
+	// network, no MCP servers, no user settings.
+	TaskArgs(message, sessionID string, o Options) []string
 	// CheckOptions reports an error when o sets a model or effort that the
 	// configured extra_args already set, rather than guessing which wins.
 	CheckOptions(o Options) error

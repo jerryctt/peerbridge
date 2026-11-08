@@ -49,15 +49,25 @@ func New(s agent.Settings) *Backend { return &Backend{s: s} }
 func (b *Backend) Name() string    { return "codex" }
 func (b *Backend) Command() string { return b.s.Command }
 
-// ReviewArgs is native for codex: `codex review` computes the diff itself and
-// never writes files. Extra args and model options go before the optional
-// positional prompt. Native review loads the user's config, which may carry
-// a review_model override, so a requested model sets review_model as well.
+// reviewFlags turn `review` into `exec review` with JSONL output (so the
+// thread id can be returned and resumed later), an explicit read-only
+// sandbox, and no user config. --ignore-user-config also means the reviewer
+// loads none of the user's MCP servers, so it has no route back into
+// peerbridge; model and effort come from our own options instead.
+var reviewFlags = []string{"--json", "--ignore-user-config", "-c", `sandbox_mode="read-only"`}
+
+// ReviewArgs is native for codex: `codex exec review` computes the diff
+// itself and never writes files. Extra args and model options go before the
+// optional positional prompt. A requested model also sets review_model,
+// which codex would otherwise prefer for reviews.
 func (b *Backend) ReviewArgs(scope, base, commit, prompt string, o agent.Options) ([]string, bool, error) {
-	args, positional, err := ReviewArgs(scope, base, commit, prompt)
+	sub, positional, err := ReviewArgs(scope, base, commit, prompt)
 	if err != nil {
 		return nil, true, err
 	}
+	// sub is ["review", <scope flags>...]
+	args := append([]string{"exec", sub[0]}, reviewFlags...)
+	args = append(args, sub[1:]...)
 	args = append(args, b.s.ExtraArgs...)
 	args = append(args, optionArgs(o, true)...)
 	if positional != "" {
@@ -92,6 +102,36 @@ func (b *Backend) ChatArgs(message, sessionID string, o agent.Options) []string 
 	args = append(args, optionArgs(o, false)...)
 	// "--" ends option parsing so caller-supplied text (a message that happens
 	// to start with "--", an odd session id) is always a positional.
+	args = append(args, "--")
+	if sessionID != "" {
+		args = append(args, sessionID)
+	}
+	return append(args, message)
+}
+
+// taskSandbox confines a task turn: writes only to the working directory
+// (the task's worktree) and $TMPDIR (a per-job dir the server sets), not
+// /tmp; no network. Verified on codex 0.166.0: writes outside the worktree
+// and to $HOME are denied, `git commit` is denied (the main repo's .git is
+// outside the writable root), and network access fails.
+var taskSandbox = []string{
+	"-c", "sandbox_workspace_write.network_access=false",
+	"-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+}
+
+// TaskArgs runs one turn that may edit files in the working directory.
+// `exec resume` has no --sandbox flag, so the mode goes through -c there,
+// as in ChatArgs.
+func (b *Backend) TaskArgs(message, sessionID string, o agent.Options) []string {
+	var args []string
+	if sessionID == "" {
+		args = []string{"exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "--ignore-user-config"}
+	} else {
+		args = []string{"exec", "resume", "--json", "--skip-git-repo-check", "--ignore-user-config", "-c", `sandbox_mode="workspace-write"`}
+	}
+	args = append(args, taskSandbox...)
+	args = append(args, b.s.ExtraArgs...)
+	args = append(args, optionArgs(o, false)...)
 	args = append(args, "--")
 	if sessionID != "" {
 		args = append(args, sessionID)

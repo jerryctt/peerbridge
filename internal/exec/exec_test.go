@@ -230,3 +230,20 @@ func TestTailBuffer(t *testing.T) {
 		t.Errorf("small = %q,%v", got, dropped)
 	}
 }
+
+func TestHeadBuffer(t *testing.T) {
+	h := headBuffer{max: 5}
+	for _, p := range []string{"ab", "cd", "efgh"} {
+		if n, err := h.Write([]byte(p)); n != len(p) || err != nil {
+			t.Fatalf("Write(%q) = %d,%v", p, n, err)
+		}
+	}
+	if h.buf.String() != "abcde" || !h.truncated {
+		t.Errorf("got %q truncated=%v", h.buf.String(), h.truncated)
+	}
+	exact := headBuffer{max: 4}
+	exact.Write([]byte("abcd"))
+	if exact.truncated {
+		t.Error("exactly max bytes is not truncated")
+	}
+}

@@ -98,12 +98,12 @@ func TestBackendReviewArgsNativeWithExtraArgs(t *testing.T) {
 	if err != nil || !native {
 		t.Fatalf("err=%v native=%v", err, native)
 	}
-	if got := strings.Join(args, " "); got != "review --uncommitted -c model=o3" {
+	if got := strings.Join(args, " "); got != `exec review --json --ignore-user-config -c sandbox_mode="read-only" --uncommitted -c model=o3` {
 		t.Errorf("args = %q", got)
 	}
 	// With a prompt the positional goes last, after extra args.
 	args, _, _ = b.ReviewArgs("base", "main", "", "focus on auth", agent.Options{})
-	if args[0] != "review" || args[len(args)-1] == "model=o3" || !strings.Contains(args[len(args)-1], "focus on auth") {
+	if args[0] != "exec" || args[1] != "review" || args[len(args)-1] == "model=o3" || !strings.Contains(args[len(args)-1], "focus on auth") {
 		t.Errorf("prompt should be the final positional: %v", args)
 	}
 	for _, a := range args {
@@ -184,7 +184,7 @@ func TestOptionArgs(t *testing.T) {
 	b := newBackend()
 	o := agent.Options{Model: "gpt-5.5", Effort: "high"}
 	args, _, _ := b.ReviewArgs("uncommitted", "", "", "", o)
-	if got := strings.Join(args, " "); got != `review --uncommitted -c model="gpt-5.5" -c review_model="gpt-5.5" -c model_reasoning_effort="high"` {
+	if got := strings.Join(args, " "); got != `exec review --json --ignore-user-config -c sandbox_mode="read-only" --uncommitted -c model="gpt-5.5" -c review_model="gpt-5.5" -c model_reasoning_effort="high"` {
 		t.Errorf("review args = %q", got)
 	}
 	args, _, _ = b.ReviewArgs("uncommitted", "", "", "focus", o)
@@ -231,6 +231,39 @@ func TestCheckOptions(t *testing.T) {
 		}
 		if err := b.CheckOptions(agent.Options{}); err != nil {
 			t.Errorf("extra %q + no options: %v", c.extra, err)
+		}
+	}
+}
+
+func TestTaskArgs(t *testing.T) {
+	b := New(agent.Settings{Command: "codex", ExtraArgs: []string{"--search"}})
+	got := strings.Join(b.TaskArgs("do it", "", agent.Options{Effort: "high"}), " ")
+	want := `exec --json --sandbox workspace-write --skip-git-repo-check --ignore-user-config -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_slash_tmp=true --search -c model_reasoning_effort="high" -- do it`
+	if got != want {
+		t.Errorf("new task:\n got %q\nwant %q", got, want)
+	}
+	got = strings.Join(b.TaskArgs("again", "thr-1", agent.Options{}), " ")
+	want = `exec resume --json --skip-git-repo-check --ignore-user-config -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_slash_tmp=true --search -- thr-1 again`
+	if got != want {
+		t.Errorf("resume task:\n got %q\nwant %q", got, want)
+	}
+	for _, a := range b.TaskArgs("x", "", agent.Options{}) {
+		if strings.Contains(a, "danger") || a == "--full-auto" || strings.Contains(a, "network_access=true") {
+			t.Errorf("task must not widen the sandbox: %q", a)
+		}
+	}
+}
+
+func TestReadOnlyMethodsNeverWrite(t *testing.T) {
+	b := newBackend()
+	rv, _, _ := b.ReviewArgs("uncommitted", "", "", "", agent.Options{})
+	for _, args := range [][]string{rv, b.ChatArgs("x", "", agent.Options{}), b.ChatArgs("x", "t", agent.Options{})} {
+		j := strings.Join(args, " ")
+		if strings.Contains(j, "workspace-write") || strings.Contains(j, "danger") {
+			t.Errorf("read-only argv contains a write mode: %q", j)
+		}
+		if !strings.Contains(j, "read-only") {
+			t.Errorf("read-only argv must state read-only: %q", j)
 		}
 	}
 }
