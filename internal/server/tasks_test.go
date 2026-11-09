@@ -899,3 +899,18 @@ func TestTaskTruncatedMetadataFailsClosed(t *testing.T) {
 		t.Errorf("truncated metadata must not be trusted: %q", out)
 	}
 }
+
+func TestNewServiceCanonicalisesStateDir(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "state-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	cfg, _ := newCfg(t)
+	cfg.StateDir = link
+	s := NewService(cfg, &fakeRunner{}, zerolog.Nop())
+	want, _ := filepath.EvalSymlinks(real)
+	if s.Cfg.StateDir != want {
+		t.Errorf("StateDir = %q, want canonical %q", s.Cfg.StateDir, want)
+	}
+}

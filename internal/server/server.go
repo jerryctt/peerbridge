@@ -203,7 +203,18 @@ type Service struct {
 }
 
 // NewService wires the codex and claude backends from cfg.
+//
+// StateDir is canonicalised once here (symlinks resolved; on Windows also
+// 8.3 short names expanded), so every path derived from it compares equal
+// to the symlink-resolved worktree paths recorded for tasks.
 func NewService(cfg *config.Config, r agent.Runner, log zerolog.Logger) *Service {
+	if cfg.StateDir != "" {
+		if err := os.MkdirAll(cfg.StateDir, 0o700); err == nil {
+			if real, err := filepath.EvalSymlinks(cfg.StateDir); err == nil {
+				cfg.StateDir = real
+			}
+		}
+	}
 	cx, cl := cfg.Agent("codex"), cfg.Agent("claude")
 	return &Service{
 		Cfg: cfg, Runner: r, Log: log, Jobs: newJobStore(),
